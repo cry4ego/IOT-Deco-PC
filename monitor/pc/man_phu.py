@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+Màn hình phụ: chụp màn hình ảo của Windows, thu nhỏ về 320x240 rồi gửi sang ESP32 (màn 2.0").
+
+Chạy:
+    python man_phu.py --list                    # xem các màn hình Windows đang có
+    python man_phu.py                           # tự tìm màn ảo (Virtual Display Driver), tự chọn USB/WiFi
+    python man_phu.py --monitor 2               # chọn màn theo số thứ tự trong --list
+    python man_phu.py --region 0,0,640,480      # thử khi chưa cài driver: phản chiếu 1 vùng màn chính
+    python man_phu.py --host deskmon.local      # chỉ dùng WiFi
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import time
+from pathlib import Path
+
+import cv2
+import numpy as np
+import requests
+from PIL import Image
+
+from capture import Grabber, Monitor, fit_rect, list_monitors, parse_region, pick_virtual, set_dpi_aware
+from link import FrameSender, LinkError, open_link
+from side_view import DEFAULT_LHM_URL, SideView
+
+log = logging.getLogger("man_phu")
+
+SCREEN_W, SCREEN_H = 320, 240
+DEFAULT_HOST = "deskmon.local"
+RETRY_S = 1.0                  # WiFi chập chờn thì nối lại nhanh, đỡ đứng hình
+NO_MONITOR_RETRY_S = 10.0      # tự khởi động cùng Windows: driver màn ảo có thể chưa sẵn sàng
+GEOMETRY_CHECK_S = 5.0         # đổi độ phân giải / vị trí màn ảo trong Display settings
+STATS_EVERY_S = 30.0
+FRAMES_IN_FLIGHT = 4           # gửi trước vài khung trong lúc ESP32 đang vẽ (đo: 2 -> 10,6; 4 -> 13,3 khung/giây)
+BYTES_IN_FLIGHT = 40000        # < bộ đệm nhận 48 KB của ESP32 (Serial.setRxBufferSize trong man_phu.ino)
+# PC tắt thì ESP32 tự chuyển sang DeskMon; bật PC lên thì nạp lại firmware màn phụ qua WiFi
+FIRMWARE = Path(__file__).resolve().parent.parent / ".pio" / "build" / "esp32dev" / "firmware.bin"
+REFLASH_EVERY_S = 300.0        # nạp lỗi thì 5 phút sau mới thử lại
+REFLASH_TIMEOUT_S = 180
+REBOOT_WAIT_S = 20.0
+RATE_WINDOW_S = 2.0
+
+
+def describe(monitors: list[Monitor]) -> str:
+    return "\n".join(f"  {i}: {m.device}  {m.width}x{m.height} tại ({m.left},{m.top})  {m.adapter}"
+                     + ("  [màn chính]" if m.primary else "") for i, m in enumerate(monitors))
+
+
+def choose_source(args) -> tuple[int, int, int, int] | None:
+    if args.region:
+        return parse_region(args.region)
+    monitors = list_monitors()
+    if args.monitor is not None:
+        m = monitors[args.monitor] if 0 <= args.monitor < len(monitors) else None
+    else:
+        m = pick_virtual(monitors)
+    if m is None:
+        log.warning("Không thấy màn hình ảo. Các màn hiện có:\n%s", describe(monitors))
+        return None
+    return m.left, m.top, m.width, m.height
+
+
+def is_deskmon(status: dict) -> bool:
+    """/api/status của DeskMon có trường "fw", của màn phụ có "firmware"."""
+    return "fw" in status
+
+
+def reflash_if_deskmon(host: str, firmware: Path) -> bool:
+    """ESP32 đang chạy DeskMon (do PC vừa tắt) thì nạp lại firmware màn phụ. True nếu đã nạp."""
+    try:
+        status = requests.get(f"http://{host}/api/status", timeout=5).json()
+    except (requests.RequestException, ValueError):
+        return False
+    if not is_deskmon(status):
+        return False
+    if not firmware.is_file():
+        log.error("ESP32 đang chạy DeskMon nhưng không thấy %s (build ở thư mục monitor/ trước)", firmware)
+        return False
+    log.info("ESP32 đang chạy DeskMon, nạp lại firmware màn phụ qua WiFi...")
+    with firmware.open("rb") as f:
+        resp = requests.post(f"http://{host}/update", files={"firmware": f}, timeout=REFLASH_TIMEOUT_S)
+    if not resp.ok:
+        log.error("Nạp firmware màn phụ lỗi: HTTP %s", resp.status_code)
+        return False
+    log.info("Đã nạp xong, chờ ESP32 khởi động lại")
+    time.sleep(REBOOT_WAIT_S)
+    return True
+
+
+def to_screen(rgb: np.ndarray) -> Image.Image:
+    """Thu nhỏ giữ tỉ lệ vào khung 320x240 (thừa thì viền đen)."""
+    h, w = rgb.shape[:2]
+    fw, fh, x, y = fit_rect(w, h, SCREEN_W, SCREEN_H)
+    canvas = np.zeros((SCREEN_H, SCREEN_W, 3), np.uint8)
+    canvas[y:y + fh, x:x + fw] = cv2.resize(rgb, (fw, fh), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(canvas)
+
+
+class App:
+    def __init__(self, args):
+        self.args = args
+        self.link = None
+        self.sender: FrameSender | None = None
+        self.grabber: Grabber | None = None
+        self.source = None
+        self.next_geometry_check = 0.0
+        self.stats_since = time.monotonic()
+        self.frames = 0
+        self.bytes = 0
+        self.next_reflash = 0.0
+        self.rate_since = time.monotonic()            # khung/giây hiện trên màn 1.54"
+        self.rate_frames = 0
+        self.rate_bytes = 0
+        self.side: SideView | None = None
+        if not args.no_side:
+            self.side = SideView(args.lhm_url)
+            self.side.start()
+
+    def ensure_source(self) -> bool:
+        now = time.monotonic()
+        if self.grabber and now < self.next_geometry_check:
+            return True
+        self.next_geometry_check = now + GEOMETRY_CHECK_S
+        source = choose_source(self.args)
+        if source != self.source:
+            if self.grabber:
+                self.grabber.close()
+                self.grabber = None
+            self.source = source
+            if source:
+                self.grabber = Grabber(*source)
+                log.info("Chụp vùng %s", source)
+                if self.sender:
+                    self.sender.forget()
+        return self.grabber is not None
+
+    def connect(self):
+        a = self.args
+        self.link = open_link(a.port, a.baud, a.host, a.tcp_port, DEFAULT_HOST)
+        self.sender = FrameSender(self.link, in_flight=FRAMES_IN_FLIGHT, threaded=True, max_bytes=BYTES_IN_FLIGHT)
+
+    def disconnect(self):
+        if self.sender:
+            self.sender.close()
+        if self.link:
+            self.link.close()
+        self.link, self.sender = None, None
+
+    def tick(self):
+        side = self.side.image() if self.side else None
+        sent = self.sender.send(to_screen(self.grabber.grab()), side=side)
+        self.bytes += sent
+        self.frames += 1
+        self.rate_bytes += sent
+        self.rate_frames += 1
+        span = time.monotonic() - self.rate_since
+        if self.side and span >= RATE_WINDOW_S:
+            self.side.set_link_stats(self.rate_frames / span, self.rate_bytes / 1024 / span,
+                                     self.link.name, self.source)
+            self.rate_frames, self.rate_bytes, self.rate_since = 0, 0, time.monotonic()
+        elapsed = time.monotonic() - self.stats_since
+        if elapsed >= STATS_EVERY_S:
+            log.info("%.1f khung/giây, %.0f KB/s", self.frames / elapsed, self.bytes / 1024 / elapsed)
+            self.frames, self.bytes, self.stats_since = 0, 0, time.monotonic()
+
+    def run(self):
+        period = 1.0 / max(1.0, self.args.fps)
+        while True:
+            try:
+                if not self.ensure_source():
+                    time.sleep(NO_MONITOR_RETRY_S)
+                    continue
+                if self.link is None:
+                    self.connect()
+                t0 = time.monotonic()
+                self.tick()
+                time.sleep(max(0.0, period - (time.monotonic() - t0)))
+            except KeyboardInterrupt:
+                raise
+            except (LinkError, OSError) as e:
+                log.warning("Mất kết nối: %s, thử lại sau %.0f s", e, RETRY_S)
+                self.disconnect()
+                self.maybe_reflash()
+                time.sleep(RETRY_S)
+
+    def maybe_reflash(self):
+        if time.monotonic() < self.next_reflash:
+            return
+        self.next_reflash = time.monotonic() + REFLASH_EVERY_S
+        try:
+            reflash_if_deskmon(self.args.host or DEFAULT_HOST, Path(self.args.firmware))
+        except requests.RequestException as e:
+            log.error("Nạp firmware màn phụ lỗi: %s", e)
+
+
+def main():
+    p = argparse.ArgumentParser(description="Màn hình phụ 320x240 trên ESP32")
+    p.add_argument("--list", action="store_true", help="Liệt kê các màn hình rồi thoát")
+    p.add_argument("--monitor", type=int, help="Số thứ tự màn hình muốn dùng (xem --list)")
+    p.add_argument("--region", help="Thử nghiệm: chụp vùng x,y,rộng,cao thay cho màn ảo")
+    p.add_argument("--port", help="Cổng COM của ESP32 (mặc định: tự tìm)")
+    p.add_argument("--baud", type=int, default=2000000, help="Phải khớp SERIAL_BAUD trong firmware")
+    p.add_argument("--host", help="Chỉ dùng WiFi tới máy này (vd deskmon.local)")
+    p.add_argument("--tcp-port", type=int, default=7778)
+    p.add_argument("--fps", type=float, default=30, help="Số khung hình tối đa mỗi giây")
+    p.add_argument("--no-side", action="store_true", help="Không vẽ màn 1.54\" (ESP32 tự hiện trạng thái)")
+    p.add_argument("--lhm-url", default=DEFAULT_LHM_URL, help="Web server của LibreHardwareMonitor")
+    p.add_argument("--firmware", default=str(FIRMWARE),
+                   help="firmware.bin màn phụ, nạp lại khi ESP32 đang chạy DeskMon")
+    p.add_argument("--log-file", help="Ghi log ra file (khi chạy ẩn bằng pythonw)")
+    p.add_argument("-v", "--verbose", action="store_true")
+    args = p.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S",
+                        filename=args.log_file, encoding="utf-8")
+    set_dpi_aware()
+    if args.list:
+        print(describe(list_monitors()))
+        return
+    App(args).run()
+
+
+if __name__ == "__main__":
+    main()
