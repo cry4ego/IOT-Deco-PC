@@ -31,6 +31,8 @@ JPEG_QUALITY = 85
 JPEG_QUALITY_BIG = 70
 BIG_REGION_PIXELS = 320 * 120  # từ nửa màn trở lên
 REPLY_TIMEOUT_S = 3.0        # WiFi đôi khi khựng 1-2 giây rồi chạy tiếp
+QUEUE_POLL_S = 0.2           # chờ luồng ghi nhận khung: cứ chừng này lại xem nó đã lỗi chưa
+CONNECT_TIMEOUT_S = 5.0
 HELLO_TRIES = 10
 KNOWN_VIDS = {0x10C4, 0x1A86, 0x0403, 0x303A}   # CP210x, CH340/CH9102, FTDI, Espressif
 
@@ -128,11 +130,21 @@ class FrameSender:
         return len(data)
 
     def close(self):
-        """Gửi hết những gì còn trong hàng đợi rồi dừng luồng ghi."""
-        if self._queue is not None:
-            self._queue.put(None)
-            self._writer.join(REPLY_TIMEOUT_S)
-            self._queue = None
+        """Gửi hết những gì còn trong hàng đợi rồi dừng luồng ghi. Không bao giờ chờ quá vài giây:
+        luồng ghi kẹt (WiFi khựng, cáp rút) thì bỏ phần chưa gửi."""
+        if self._queue is None:
+            return
+        q, self._queue = self._queue, None
+        try:
+            q.put(None, timeout=self._stall_s())
+        except queue.Full:
+            while True:                              # luồng ghi kẹt: bỏ khung đang chờ để gửi được lệnh dừng
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+            q.put_nowait(None)
+        self._writer.join(REPLY_TIMEOUT_S)
 
     def _screen_packets(self, screen: int, img: Image.Image) -> bytes:
         arr = np.asarray(img.convert("RGB"))
@@ -146,23 +158,37 @@ class FrameSender:
         if self._queue is None:
             self.link.write(data)
             return
-        if self._writer_error is not None:
-            raise LinkError(f"Lỗi gửi: {self._writer_error}")
-        self._queue.put(data)
+        # put() không giới hạn từng làm treo cả chương trình: luồng ghi lỗi rồi thoát trong lúc
+        # hàng đợi còn đầy, luồng chính chờ chỗ trống mãi mãi (log 14/11 lúc 13:22 và 15:19)
+        deadline = time.monotonic() + self._stall_s()
+        while True:
+            if self._writer_error is not None:
+                raise LinkError(f"Lỗi gửi: {self._writer_error}")
+            try:
+                self._queue.put(data, timeout=QUEUE_POLL_S)
+                return
+            except queue.Full:
+                if time.monotonic() > deadline:
+                    raise LinkError("ESP32 không nhận dữ liệu (luồng ghi bị kẹt)") from None
 
     def _write_loop(self):
-        while (data := self._queue.get()) is not None:
+        queue_ = self._queue
+        while (data := queue_.get()) is not None:
+            if self._writer_error is not None:
+                continue                      # đã lỗi: vẫn lấy hết hàng đợi để luồng chính không kẹt
             try:
                 self.link.write(data)
             except Exception as e:            # báo lại cho luồng chính ở lần gửi sau
                 self._writer_error = e
-                return
+
+    def _stall_s(self) -> float:
+        return getattr(self.link, "reply_timeout", REPLY_TIMEOUT_S)
 
     def forget(self):
         self.prev = {0: None, 1: None}               # lần sau gửi lại toàn màn
 
     def _wait_reply(self):
-        reply = self.link.read_reply(getattr(self.link, "reply_timeout", REPLY_TIMEOUT_S))
+        reply = self.link.read_reply(self._stall_s())
         if reply is None:
             self.forget()
             raise LinkError("ESP32 không phản hồi")
@@ -225,13 +251,40 @@ class SerialLink:
         self.ser.close()
 
 
+_known_ips: dict[str, str] = {}
+
+
+def lookup_ipv4(host: str) -> str:
+    return socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+
+
+def address_of(host: str) -> str:
+    """IP đã kết nối được lần trước (nếu có), để khỏi hỏi lại tên deskmon.local."""
+    return _known_ips.get(host, host)
+
+
+def connect_tcp(host: str, port: int) -> socket.socket:
+    """Thử IP lần trước trước: mDNS (deskmon.local) trên Windows thỉnh thoảng không trả lời
+    (log: "getaddrinfo failed" làm mất hình 10-20 giây). Không được mới hỏi lại tên (IP có thể đổi)."""
+    known = _known_ips.get(host)
+    if known:
+        try:
+            return socket.create_connection((known, port), timeout=CONNECT_TIMEOUT_S)
+        except OSError:
+            pass
+    ip = lookup_ipv4(host)
+    sock = socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT_S)
+    _known_ips[host] = ip
+    return sock
+
+
 class TcpLink:
     # WiFi hay khựng 1-3 giây nhưng TCP không làm mất byte nào: chờ thêm thay vì cắt kết nối
     # (log cũ: 64/66 lần mất kết nối là do chờ 3 giây không đủ khi đang dùng WiFi).
     reply_timeout = 6.0
 
     def __init__(self, host: str, port: int):
-        self.sock = socket.create_connection((host, port), timeout=5)
+        self.sock = connect_tcp(host, port)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.name = f"WiFi {host}:{port}"
         self.replies: deque[int] = deque()

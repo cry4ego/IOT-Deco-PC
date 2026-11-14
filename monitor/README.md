@@ -81,12 +81,20 @@ Tuỳ chọn khác: `--monitor N` (chọn màn theo số trong `--list`), `--por
 
 **Tự chạy cùng Windows:** trong `shell:startup` (`Win + R`, gõ `shell:startup`) có shortcut `Man hinh phu.lnk` trỏ tới `monitor\pc\chay_man_phu.bat`. Shortcut DeskMon cũ được đổi tên thành `DeskMon.lnk.tat` để không chạy (hai chương trình cùng dùng một ESP32).
 
+**Chạy ẩn mà không chết lặng lẽ** (từ 14/11, sau hai lần chương trình treo cứng lúc 13:22 và 15:19):
+- Lỗi treo cũ: WiFi khựng làm luồng gửi gặp lỗi đúng lúc hàng đợi còn khung, luồng chính thì chờ chỗ trống mãi. Hình ngừng, 90 giây sau ESP32 về DeskMon, còn chương trình treo nên không nạp lại màn phụ. Đã sửa: không còn chỗ chờ nào không có giới hạn.
+- **Watchdog:** vòng chính đứng quá 45 giây vì bất cứ lý do gì thì chương trình ghi chỗ bị kẹt vào `man_phu.log` (dòng "Vòng chính đứng quá…") rồi tự chạy lại. 45 giây ngắn hơn 90 giây ESP32 chờ, nên màn phụ không kịp về DeskMon.
+- Lỗi lạ khác chỉ được ghi vào log ("Lỗi không lường trước") rồi chạy tiếp, không tắt hẳn.
+- Chỉ một bản chạy một lúc. Mở thêm bản nữa thì bản mới tự thoát, log ghi "đang chạy ở một bản khác".
+- Muốn tắt hẳn: `taskkill /IM pythonw.exe /F` (cũng tắt các chương trình pythonw khác nếu có).
+
 ## 4. PC bật: màn phụ. PC tắt: DeskMon
 
 ESP32 có hai vùng firmware: một vùng giữ DeskMon, một vùng giữ màn phụ.
 
 - **PC tắt / ngủ:** 90 giây không có hình, firmware màn phụ tự khởi động sang DeskMon. Màn lại là đồng hồ, thời tiết, tin tức như cũ.
-- **PC bật:** `man_phu.py` thấy ESP32 đang chạy DeskMon thì tự nạp lại firmware màn phụ qua WiFi (khoảng 20 giây), rồi hiện hình. Từ lúc Windows mở chương trình tới lúc có hình mất khoảng 1 phút.
+- **PC bật:** `man_phu.py` thấy ESP32 đang chạy DeskMon thì tự nạp lại firmware màn phụ qua WiFi (khoảng 20 giây), rồi hiện hình. Từ lúc Windows mở chương trình tới lúc có hình mất khoảng 1 phút. Chưa hỏi được ESP32 (mới bật WiFi, mDNS chưa trả lời) thì 10 giây sau hỏi lại. Chỉ khi nạp thật sự lỗi mới chờ 5 phút rồi thử lại.
+- Tên `deskmon.local` (mDNS) trên Windows thỉnh thoảng không trả lời, nên chương trình nối lại bằng IP của lần kết nối trước.
 
 Cần: ESP32 vào được WiFi nhà, và `monitor\.pio\build\esp32dev\firmware.bin` có sẵn (build ở thư mục `monitor/` là có).
 

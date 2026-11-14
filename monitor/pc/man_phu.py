@@ -22,7 +22,8 @@ import requests
 from PIL import Image
 
 from capture import Grabber, Monitor, fit_rect, list_monitors, parse_region, pick_virtual, set_dpi_aware
-from link import FrameSender, LinkError, open_link
+from guard import Watchdog, acquire_single_instance, restart_self
+from link import FrameSender, LinkError, address_of, open_link
 from side_view import DEFAULT_LHM_URL, SideView
 
 log = logging.getLogger("man_phu")
@@ -39,9 +40,13 @@ BYTES_IN_FLIGHT = 40000        # < bộ đệm nhận 48 KB của ESP32 (Serial.
 FIRMWARE = Path(__file__).resolve().parent.parent / ".pio" / "build" / "esp32dev" / "firmware.bin"
 DESKMON_FIRMWARE = Path(__file__).resolve().parents[2] / ".pio" / "build" / "ota" / "firmware.bin"
 REFLASH_EVERY_S = 300.0        # nạp lỗi thì 5 phút sau mới thử lại
+REFLASH_CHECK_S = 10.0         # chưa nối được: cứ chừng này hỏi xem ESP32 có đang chạy DeskMon không
 REFLASH_TIMEOUT_S = 180
 REBOOT_WAIT_S = 20.0
 RATE_WINDOW_S = 2.0
+# Vòng chính kẹt quá chừng này thì tự chạy lại (< 90 giây ESP32 chờ trước khi về DeskMon)
+WATCHDOG_S = 45.0
+LONG_WORK_S = REFLASH_TIMEOUT_S + REBOOT_WAIT_S + 60    # nạp firmware: được phép lâu hơn
 
 
 def describe(monitors: list[Monitor]) -> str:
@@ -73,13 +78,20 @@ def needs_deskmon(status: dict) -> bool:
     return "firmware" in status and status.get("deskmonSlot") is False
 
 
+def board_status(host: str) -> tuple[str | None, dict | None]:
+    """(địa chỉ trả lời được, /api/status). Thử IP lần trước rồi mới tới tên (mDNS hay hụt)."""
+    for addr in dict.fromkeys([address_of(host), host]):
+        try:
+            return addr, requests.get(f"http://{addr}/api/status", timeout=5).json()
+        except (requests.RequestException, ValueError):
+            continue
+    return None, None
+
+
 def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
     """Nạp DeskMon vào vùng firmware còn lại; màn phụ vẫn chạy, không khởi động lại. True nếu đã nạp."""
-    try:
-        status = requests.get(f"http://{host}/api/status", timeout=5).json()
-    except (requests.RequestException, ValueError):
-        return False
-    if not needs_deskmon(status):
+    host, status = board_status(host)
+    if status is None or not needs_deskmon(status):
         return False
     if not firmware.is_file():
         log.error("Vùng còn lại của ESP32 không có DeskMon và không thấy %s (build DeskMon ở thư mục gốc)", firmware)
@@ -92,14 +104,12 @@ def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
     return ok
 
 
-def reflash_if_deskmon(host: str, firmware: Path) -> bool:
-    """ESP32 đang chạy DeskMon (do PC vừa tắt) thì nạp lại firmware màn phụ. True nếu đã nạp."""
-    try:
-        status = requests.get(f"http://{host}/api/status", timeout=5).json()
-    except (requests.RequestException, ValueError):
-        return False
-    if not is_deskmon(status):
-        return False
+def reflash_if_deskmon(host: str, firmware: Path) -> bool | None:
+    """ESP32 đang chạy DeskMon (do PC vừa tắt) thì nạp lại firmware màn phụ.
+    True: đã nạp. False: nạp lỗi. None: không cần nạp hoặc chưa hỏi được ESP32."""
+    host, status = board_status(host)
+    if status is None or not is_deskmon(status):
+        return None
     if not firmware.is_file():
         log.error("ESP32 đang chạy DeskMon nhưng không thấy %s (build ở thư mục monitor/ trước)", firmware)
         return False
@@ -124,8 +134,9 @@ def to_screen(rgb: np.ndarray) -> Image.Image:
 
 
 class App:
-    def __init__(self, args):
+    def __init__(self, args, watchdog: Watchdog | None = None):
         self.args = args
+        self.watchdog = watchdog
         self.link = None
         self.sender: FrameSender | None = None
         self.grabber: Grabber | None = None
@@ -165,7 +176,9 @@ class App:
     def connect(self):
         a = self.args
         self.link = open_link(a.port, a.baud, a.host, a.tcp_port, DEFAULT_HOST)
+        self.beat(LONG_WORK_S)                            # có thể phải nạp DeskMon vào vùng còn lại
         self.ensure_deskmon()
+        self.beat()
         self.sender = FrameSender(self.link, in_flight=FRAMES_IN_FLIGHT, threaded=True, max_bytes=BYTES_IN_FLIGHT)
 
     def ensure_deskmon(self):
@@ -179,11 +192,20 @@ class App:
             log.error("Nạp DeskMon vào vùng còn lại lỗi: %s", e)
 
     def disconnect(self):
-        if self.sender:
-            self.sender.close()
-        if self.link:
-            self.link.close()
+        """Đóng kết nối trước: luồng ghi đang kẹt giữa chừng (WiFi khựng) sẽ thoát ra ngay."""
+        link, sender = self.link, self.sender
         self.link, self.sender = None, None
+        for close in (link.close if link else None, sender.close if sender else None):
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as e:  # noqa: BLE001 - đang ngắt kết nối, lỗi khi đóng không quan trọng
+                log.debug("Lỗi khi đóng kết nối: %s", e)
+
+    def beat(self, grace_s: float = 0.0):
+        if self.watchdog:
+            self.watchdog.beat(grace_s)
 
     def tick(self):
         side = self.side.image() if self.side else None
@@ -205,6 +227,7 @@ class App:
     def run(self):
         period = 1.0 / max(1.0, self.args.fps)
         while True:
+            self.beat()
             try:
                 if not self.ensure_source():
                     time.sleep(NO_MONITOR_RETRY_S)
@@ -218,18 +241,27 @@ class App:
                 raise
             except (LinkError, OSError) as e:
                 log.warning("Mất kết nối: %s, thử lại sau %.0f s", e, RETRY_S)
-                self.disconnect()
-                self.maybe_reflash()
-                time.sleep(RETRY_S)
+                self.recover()
+            except Exception:                         # lỗi lạ: ghi lại rồi chạy tiếp, đừng tắt hẳn màn phụ
+                log.exception("Lỗi không lường trước, thử lại sau %.0f s", RETRY_S)
+                self.recover()
+
+    def recover(self):
+        self.disconnect()
+        self.beat(LONG_WORK_S)
+        self.maybe_reflash()
+        time.sleep(RETRY_S)
 
     def maybe_reflash(self):
         if time.monotonic() < self.next_reflash:
             return
-        self.next_reflash = time.monotonic() + REFLASH_EVERY_S
         try:
-            reflash_if_deskmon(self.args.host or DEFAULT_HOST, Path(self.args.firmware))
+            done = reflash_if_deskmon(self.args.host or DEFAULT_HOST, Path(self.args.firmware))
         except requests.RequestException as e:
             log.error("Nạp firmware màn phụ lỗi: %s", e)
+            done = False
+        # Chỉ chờ lâu khi nạp thật sự lỗi; chưa hỏi được ESP32 thì hỏi lại sớm
+        self.next_reflash = time.monotonic() + (REFLASH_EVERY_S if done is False else REFLASH_CHECK_S)
 
 
 def main():
@@ -259,7 +291,13 @@ def main():
     if args.list:
         print(describe(list_monitors()))
         return
-    App(args).run()
+    if not acquire_single_instance():
+        log.error("Màn phụ đang chạy ở một bản khác, bản này thoát")
+        return
+    script = Path(__file__).resolve()
+    watchdog = Watchdog(WATCHDOG_S, lambda: restart_self(script, f"Vòng chính đứng quá {WATCHDOG_S:.0f} giây"))
+    watchdog.start()
+    App(args, watchdog).run()
 
 
 if __name__ == "__main__":

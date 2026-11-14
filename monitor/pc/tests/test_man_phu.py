@@ -3,6 +3,7 @@ import io
 import socket
 import struct
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -303,3 +304,131 @@ def test_parse_region():
     assert parse_region("100,50,640,480") == (100, 50, 640, 480)
     with pytest.raises(ValueError):
         parse_region("100,50,640")
+
+
+# ---------------------------------------------------------------- chống treo (log 14/11: treo lúc 13:22 và 15:19)
+import threading  # noqa: E402
+
+
+class StallingLink(FakeLink):
+    """WiFi khựng: lần ghi đầu đứng chờ rồi lỗi, như socket hết thời gian chờ giữa chừng."""
+    reply_timeout = 0.3
+
+    def __init__(self, fail_after_s: float = 0.3):
+        super().__init__([])
+        self.fail_after_s = fail_after_s
+
+    def write(self, data: bytes):
+        time.sleep(self.fail_after_s)
+        raise OSError("timed out")
+
+
+def finishes_within(seconds: float, fn):
+    """Chạy fn ở luồng riêng. Trả (xong kịp không, lỗi nếu có): treo thì test báo lỗi chứ không treo theo."""
+    box = {}
+
+    def target():
+        try:
+            fn()
+        except BaseException as e:  # noqa: BLE001 - test cần xem đúng lỗi gì
+            box["error"] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    return not t.is_alive(), box.get("error")
+
+
+def test_send_raises_instead_of_hanging_when_the_writer_fails_with_frames_queued():
+    sender = FrameSender(StallingLink(), in_flight=8, threaded=True)
+
+    done, error = finishes_within(5, lambda: [sender.send(noisy(i)) for i in range(4)])
+
+    assert done, "send() bị treo khi luồng ghi lỗi lúc còn khung trong hàng đợi"
+    assert isinstance(error, LinkError)
+
+
+def test_close_returns_when_the_writer_failed_with_data_still_queued():
+    sender = FrameSender(StallingLink(), in_flight=8, threaded=True)
+    sender.send(noisy(0))                                    # luồng ghi đang kẹt với khung này
+    sender.send(noisy(1))                                    # khung này nằm chờ trong hàng đợi
+
+    done, _ = finishes_within(5, sender.close)
+
+    assert done, "close() bị treo khi luồng ghi đã lỗi"
+
+
+def test_send_gives_up_when_the_writer_never_finishes():
+    sender = FrameSender(StallingLink(fail_after_s=30), in_flight=8, threaded=True)
+
+    done, error = finishes_within(5, lambda: [sender.send(noisy(i)) for i in range(4)])
+
+    assert done, "send() chờ mãi luồng ghi bị kẹt"
+    assert isinstance(error, LinkError)
+
+
+def test_tcp_reconnects_by_last_known_address_when_name_lookup_fails(monkeypatch):
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    monkeypatch.setattr(link_module, "_known_ips", {})
+    monkeypatch.setattr(link_module, "lookup_ipv4", lambda host: "127.0.0.1")
+    TcpLink("board.local", port).close()
+
+    def lookup_fails(host):
+        raise socket.gaierror(11001, "getaddrinfo failed")  # mDNS của Windows thỉnh thoảng không trả lời
+    monkeypatch.setattr(link_module, "lookup_ipv4", lookup_fails)
+    again = TcpLink("board.local", port)
+
+    again.close()
+    server.close()
+    assert link_module.address_of("board.local") == "127.0.0.1"
+
+
+def test_watchdog_fires_only_after_the_main_loop_stops_beating():
+    from guard import Watchdog
+    now, fired = [0.0], []
+    dog = Watchdog(45, lambda: fired.append(now[0]), clock=lambda: now[0])
+
+    now[0] = 44
+    assert not dog.check()
+    dog.beat()
+    now[0] = 80                                              # 36 giây sau lần báo cuối
+    assert not dog.check()
+    now[0] = 90
+    assert dog.check()
+    assert fired == [90]
+
+
+def test_watchdog_gives_long_work_like_reflashing_extra_time():
+    from guard import Watchdog
+    now, fired = [0.0], []
+    dog = Watchdog(45, lambda: fired.append(now[0]), clock=lambda: now[0])
+
+    dog.beat(grace_s=260)
+    now[0] = 200
+    assert not dog.check()
+    now[0] = 261
+    assert dog.check()
+
+
+def test_restart_command_reruns_this_script_with_the_same_arguments(tmp_path):
+    from guard import restart_command
+    script = tmp_path / "man_phu.py"
+
+    cmd = restart_command(script, ["--log-file", "man_phu.log"], executable="pythonw.exe")
+
+    assert cmd == ["pythonw.exe", str(script), "--log-file", "man_phu.log"]
+
+
+@pytest.mark.parametrize("outcome, wait_s", [(None, 10.0), (True, 10.0), (False, 300.0)])
+def test_reflash_waits_long_only_after_a_real_flash_failure(monkeypatch, outcome, wait_s):
+    import types
+
+    import man_phu
+    monkeypatch.setattr(man_phu, "reflash_if_deskmon", lambda host, fw: outcome)
+    app = man_phu.App(types.SimpleNamespace(no_side=True, host=None, firmware="fw.bin"))
+    before = time.monotonic()
+
+    app.maybe_reflash()
+
+    assert app.next_reflash - before == pytest.approx(wait_s, abs=1.0)
