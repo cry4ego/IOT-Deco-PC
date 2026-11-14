@@ -7,6 +7,7 @@
 struct NetHooks {
   void (*status)(JsonObject out);
   void (*otaProgress)(int percent);         // -1 = lỗi
+  bool (*deskmonWritten)();                 // đã nạp vào vùng còn lại: true nếu đúng là DeskMon
 };
 
 void netBegin(const NetHooks& hooks);       // kết nối WiFi (không chờ)

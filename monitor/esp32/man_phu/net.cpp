@@ -1,5 +1,6 @@
 #include "net.h"
 #include <ESPmDNS.h>
+#include <esp_ota_ops.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <WebServer.h>
@@ -69,6 +70,20 @@ void handleUploadDone() {
   ESP.restart();
 }
 
+// PC nạp DeskMon vào vùng firmware còn lại nhưng màn phụ vẫn chạy: không khởi động lại,
+// trả vùng khởi động về firmware đang chạy (Update.end vừa đổi sang vùng mới).
+void handleDeskmonDone() {
+  if (!originAllowed()) {
+    server.send(403, "text/plain", "Yêu cầu đến từ trang web khác");
+    return;
+  }
+  const bool written = !uploadFailed && !Update.hasError();
+  if (written) esp_ota_set_boot_partition(esp_ota_get_running_partition());
+  const bool deskmon = written && hooks.deskmonWritten && hooks.deskmonWritten();
+  server.send(written ? 200 : 500, "application/json",
+              String("{\"ok\":") + (written ? "true" : "false") + ",\"deskmon\":" + (deskmon ? "true" : "false") + "}");
+}
+
 void handleUploadChunk() {
   HTTPUpload& up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
@@ -101,6 +116,7 @@ void startServices() {
   server.on("/", HTTP_GET, [] { server.send_P(200, "text/html; charset=utf-8", PAGE); });
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/update", HTTP_POST, handleUploadDone, handleUploadChunk);
+  server.on("/api/deskmon", HTTP_POST, handleDeskmonDone, handleUploadChunk);
   server.onNotFound([] { server.send(404, "text/plain", "Không có trang này"); });
   server.begin();
   started = true;

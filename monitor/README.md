@@ -36,7 +36,7 @@ PC không nối thì ESP32 tự hiện trạng thái kết nối, IP. Muốn đ�
   - SPI màn 2.0" chạy 80 MHz;
   - ESP32 thôi tự vẽ màn 1.54" khi PC đã vẽ.
 
-  Cáp USB thực tế chở được khoảng 147 KB/s (chip CH340). WiFi chậm hơn (khoảng 90 KB/s) và đôi khi chập chờn.
+  Cáp USB thực tế chở được khoảng 147 KB/s (chip CH340). WiFi chậm hơn (khoảng 90 KB/s) và đôi khi khựng 1–3 giây. Từ bản 0.4.0, khi đang dùng WiFi, PC chờ trả lời tới 6 giây và ESP32 chờ dữ liệu tới 5 giây, vì qua WiFi dữ liệu chỉ đến chậm chứ không mất. Nhờ vậy những cú khựng đó chỉ làm hình đứng một chút, không cắt kết nối nữa. Trước đây chỉ chờ 3 giây (ESP32 chờ 1 giây), nên cứ khoảng 26 giây lại mất kết nối một lần.
 - **Nếu màn 2.0" bị nhiễu màu hoặc sọc** (dây cắm dài không chịu nổi SPI 80 MHz): trong `esp32/man_phu/man_phu.ino` đổi `b.freq_write = 80000000;` ở màn 2.0" về `40000000`, rồi nạp lại.
 
 ## 1. Cài driver màn hình ảo (bạn tự cài, cần quyền admin)
@@ -90,6 +90,15 @@ ESP32 có hai vùng firmware: một vùng giữ DeskMon, một vùng giữ màn 
 
 Cần: ESP32 vào được WiFi nhà, và `monitor\.pio\build\esp32dev\firmware.bin` có sẵn (build ở thư mục `monitor/` là có).
 
+**Giữ DeskMon ở vùng còn lại:** nạp qua WiFi luôn ghi vào vùng *không chạy*. Vì vậy nạp màn phụ qua WiFi trong lúc màn phụ đang chạy sẽ ghi đè lên DeskMon. Đây là nguyên nhân lỗi "tắt PC mà không về DeskMon" ở bản 0.3.0. Từ bản 0.4.0:
+- Lúc khởi động, firmware màn phụ dò xem vùng còn lại có DeskMon không (`deskmonSlot` trong `/api/status`). Không có thì nó **không** chuyển sang vùng đó, và màn 1.54" ghi "Chưa có DeskMon dự phòng".
+- `man_phu.py` thấy `deskmonSlot: false` thì tự nạp DeskMon (`D:\deskmon\.pio\build\ota\firmware.bin`) vào vùng còn lại qua `/api/deskmon`, mất khoảng 20 giây. Màn phụ vẫn chạy, không khởi động lại.
+- Muốn nạp cả hai qua cáp USB một lần (DeskMon vào vùng 2, màn phụ vào vùng 1), chạy hai lệnh sau trong thư mục `monitor/`:
+  ```
+  python %USERPROFILE%\.platformio\packages\tool-esptoolpy\esptool.py --chip esp32 --port COM4 --baud 921600 write_flash 0x1F0000 ..\.pio\build\ota\firmware.bin
+  pio run -t upload --upload-port COM4
+  ```
+
 **Nguồn cho board:** nếu board chỉ cắm vào cổng USB của PC, nhiều máy tắt luôn nguồn USB khi tắt PC, board tắt theo và không hiện DeskMon được. Muốn DeskMon chạy lúc tắt PC thì cấp nguồn riêng (cốc sạc), hoặc bật tuỳ chọn giữ nguồn USB khi tắt máy trong BIOS (thường tên *ErP* phải để Disabled).
 
 ## 5. Quay lại hẳn DeskMon
@@ -105,7 +114,7 @@ Cài đặt của DeskMon (tin tức, nhắc việc, WiFi…) vẫn còn nguyên
 
 ## Giao thức
 
-Xem `esp32/man_phu/protocol.h`. Mỗi gói: `'M' 'P' | loại | x | y | độ dài | CRC32 | dữ liệu`. Hết mỗi khung, ESP32 trả 1 byte: ACK (đã vẽ xong), NAK (gói hỏng, PC gửi lại toàn màn), NEED_FULL (vừa hiện màn chờ). PC gửi trước 1 khung trong lúc ESP32 đang vẽ khung trước.
+Xem `esp32/man_phu/protocol.h`. Mỗi gói: `'M' 'P' | loại | màn (0 = 2.0", 1 = 1.54") | x | y | độ dài | CRC32 | dữ liệu`. Hết mỗi khung, ESP32 trả 1 byte: ACK (đã vẽ xong), NAK (gói hỏng, PC gửi lại toàn màn), NEED_FULL (vừa hiện màn chờ). PC gửi trước tối đa 4 khung (không quá 40 KB) trong lúc ESP32 đang vẽ.
 
 ## Kiểm thử
 

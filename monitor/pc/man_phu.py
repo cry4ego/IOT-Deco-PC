@@ -37,6 +37,7 @@ FRAMES_IN_FLIGHT = 4           # gửi trước vài khung trong lúc ESP32 đan
 BYTES_IN_FLIGHT = 40000        # < bộ đệm nhận 48 KB của ESP32 (Serial.setRxBufferSize trong man_phu.ino)
 # PC tắt thì ESP32 tự chuyển sang DeskMon; bật PC lên thì nạp lại firmware màn phụ qua WiFi
 FIRMWARE = Path(__file__).resolve().parent.parent / ".pio" / "build" / "esp32dev" / "firmware.bin"
+DESKMON_FIRMWARE = Path(__file__).resolve().parents[2] / ".pio" / "build" / "ota" / "firmware.bin"
 REFLASH_EVERY_S = 300.0        # nạp lỗi thì 5 phút sau mới thử lại
 REFLASH_TIMEOUT_S = 180
 REBOOT_WAIT_S = 20.0
@@ -65,6 +66,30 @@ def choose_source(args) -> tuple[int, int, int, int] | None:
 def is_deskmon(status: dict) -> bool:
     """/api/status của DeskMon có trường "fw", của màn phụ có "firmware"."""
     return "fw" in status
+
+
+def needs_deskmon(status: dict) -> bool:
+    """Màn phụ báo vùng firmware còn lại không chứa DeskMon (bị nạp đè): PC tắt sẽ không về DeskMon được."""
+    return "firmware" in status and status.get("deskmonSlot") is False
+
+
+def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
+    """Nạp DeskMon vào vùng firmware còn lại; màn phụ vẫn chạy, không khởi động lại. True nếu đã nạp."""
+    try:
+        status = requests.get(f"http://{host}/api/status", timeout=5).json()
+    except (requests.RequestException, ValueError):
+        return False
+    if not needs_deskmon(status):
+        return False
+    if not firmware.is_file():
+        log.error("Vùng còn lại của ESP32 không có DeskMon và không thấy %s (build DeskMon ở thư mục gốc)", firmware)
+        return False
+    log.info("Vùng còn lại của ESP32 không có DeskMon (PC tắt sẽ không về DeskMon được), nạp lại DeskMon...")
+    with firmware.open("rb") as f:
+        resp = requests.post(f"http://{host}/api/deskmon", files={"firmware": f}, timeout=REFLASH_TIMEOUT_S)
+    ok = resp.ok and resp.json().get("deskmon") is True
+    log.log(logging.INFO if ok else logging.ERROR, "Nạp DeskMon vào vùng còn lại: %s", "xong" if ok else resp.text)
+    return ok
 
 
 def reflash_if_deskmon(host: str, firmware: Path) -> bool:
@@ -110,6 +135,7 @@ class App:
         self.frames = 0
         self.bytes = 0
         self.next_reflash = 0.0
+        self.next_deskmon_check = 0.0
         self.rate_since = time.monotonic()            # khung/giây hiện trên màn 1.54"
         self.rate_frames = 0
         self.rate_bytes = 0
@@ -139,7 +165,18 @@ class App:
     def connect(self):
         a = self.args
         self.link = open_link(a.port, a.baud, a.host, a.tcp_port, DEFAULT_HOST)
+        self.ensure_deskmon()
         self.sender = FrameSender(self.link, in_flight=FRAMES_IN_FLIGHT, threaded=True, max_bytes=BYTES_IN_FLIGHT)
+
+    def ensure_deskmon(self):
+        """Mỗi lần nối lại thì kiểm tra; nạp lỗi thì chờ REFLASH_EVERY_S mới thử tiếp."""
+        if time.monotonic() < self.next_deskmon_check:
+            return
+        self.next_deskmon_check = time.monotonic() + REFLASH_EVERY_S
+        try:
+            install_deskmon_if_missing(self.args.host or DEFAULT_HOST, Path(self.args.deskmon_firmware))
+        except requests.RequestException as e:
+            log.error("Nạp DeskMon vào vùng còn lại lỗi: %s", e)
 
     def disconnect(self):
         if self.sender:
@@ -209,6 +246,8 @@ def main():
     p.add_argument("--lhm-url", default=DEFAULT_LHM_URL, help="Web server của LibreHardwareMonitor")
     p.add_argument("--firmware", default=str(FIRMWARE),
                    help="firmware.bin màn phụ, nạp lại khi ESP32 đang chạy DeskMon")
+    p.add_argument("--deskmon-firmware", default=str(DESKMON_FIRMWARE),
+                   help="firmware.bin DeskMon, nạp vào vùng còn lại nếu ESP32 báo thiếu")
     p.add_argument("--log-file", help="Ghi log ra file (khi chạy ẩn bằng pythonw)")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()

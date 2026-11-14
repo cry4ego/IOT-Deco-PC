@@ -272,6 +272,33 @@ def test_is_deskmon_recognises_the_deskmon_firmware_only():
     assert is_deskmon({}) is False
 
 
+def test_needs_deskmon_only_when_monitor_reports_its_other_slot_lacks_deskmon():
+    from man_phu import needs_deskmon
+
+    assert needs_deskmon({"firmware": "man-phu 0.4.0", "deskmonSlot": False}) is True
+    assert needs_deskmon({"firmware": "man-phu 0.4.0", "deskmonSlot": True}) is False
+    assert needs_deskmon({"firmware": "man-phu 0.3.0"}) is False      # bản cũ không báo: không đoán
+    assert needs_deskmon({"fw": "2.1.0"}) is False                      # đang chạy DeskMon
+
+
+def test_sender_waits_as_long_as_the_link_needs():
+    class SlowLink(FakeLink):
+        reply_timeout = 6.0
+
+        def read_reply(self, timeout):
+            self.asked = timeout
+            return super().read_reply(timeout)
+
+    link = SlowLink([ACK])
+    FrameSender(link).send(noisy())
+
+    assert link.asked == 6.0
+
+
+def test_wifi_waits_longer_than_usb_for_a_reply():
+    assert TcpLink.reply_timeout > link_module.SerialLink.reply_timeout
+
+
 def test_parse_region():
     assert parse_region("100,50,640,480") == (100, 50, 640, 480)
     with pytest.raises(ValueError):

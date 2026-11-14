@@ -162,7 +162,7 @@ class FrameSender:
         self.prev = {0: None, 1: None}               # lần sau gửi lại toàn màn
 
     def _wait_reply(self):
-        reply = self.link.read_reply(REPLY_TIMEOUT_S)
+        reply = self.link.read_reply(getattr(self.link, "reply_timeout", REPLY_TIMEOUT_S))
         if reply is None:
             self.forget()
             raise LinkError("ESP32 không phản hồi")
@@ -187,6 +187,8 @@ def keep_replies(replies: deque, data: bytes):
 
 
 class SerialLink:
+    reply_timeout = REPLY_TIMEOUT_S
+
     def __init__(self, port: str, baud: int):
         import serial  # pyserial
         self.ser = serial.Serial()
@@ -224,6 +226,10 @@ class SerialLink:
 
 
 class TcpLink:
+    # WiFi hay khựng 1-3 giây nhưng TCP không làm mất byte nào: chờ thêm thay vì cắt kết nối
+    # (log cũ: 64/66 lần mất kết nối là do chờ 3 giây không đủ khi đang dùng WiFi).
+    reply_timeout = 6.0
+
     def __init__(self, host: str, port: int):
         self.sock = socket.create_connection((host, port), timeout=5)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

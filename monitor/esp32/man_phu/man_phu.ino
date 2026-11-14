@@ -16,12 +16,13 @@
 #include "protocol.h"
 #include "../../../esp32/deskmon_esp32/fonts_vi.h"   // phông tiếng Việt của DeskMon (chỉ đọc)
 
-const char* FW_VERSION = "man-phu 0.3.0";
+const char* FW_VERSION = "man-phu 0.4.0";
 const uint32_t SERIAL_BAUD = 2000000;       // CH340 chạy được 2 Mbaud; phải khớp --baud bên PC
 const uint16_t TCP_PORT = 7778;             // khác cổng 7777 của DeskMon
 const uint32_t IDLE_MS = 5000;              // chừng này không có khung hình -> hiện màn chờ
 const uint32_t STATUS_MS = 1000;
-const uint32_t READ_TIMEOUT_MS = 1000;
+const uint32_t READ_TIMEOUT_USB_MS = 1000;  // USB có thể mất byte: chờ ngắn rồi dò lại đầu gói
+const uint32_t READ_TIMEOUT_TCP_MS = 5000;  // WiFi chỉ khựng chứ không mất byte: chờ, đừng bỏ dở gói
 // Chừng này không có hình từ PC (PC tắt / ngủ) -> khởi động vào DeskMon ở vùng firmware còn lại,
 // để màn vẫn là đồng hồ/thời tiết/tin tức. Bật PC lên, man_phu.py tự nạp lại màn phụ.
 const uint32_t SWITCH_TO_DESKMON_MS = 90000;
@@ -128,8 +129,9 @@ static uint32_t lastStaFrameMs = 0;         // PC đang tự vẽ màn 1.54" (tr
 static bool staDriven = false, staDirty = false;   // staDirty: ESP32 vừa tự vẽ trang trạng thái
 static const char* linkName = "";
 static int otaPercent = -2;
+static bool deskmonInOther = false;         // vùng firmware còn lại có DeskMon không (dò lúc khởi động)
 
-static const uint16_t BG = 0x0861, FG = 0xF7BE, DIM = 0x8C94, ACCENT = 0x3DFF;
+static const uint16_t BG = 0x0861, FG = 0xF7BE, DIM = 0x8C94, ACCENT = 0x3DFF, WARN = 0xFD20;
 
 static void text(lgfx::LGFX_Device& d, const uint8_t* font, const char* s, int x, int y, textdatum_t datum,
                  uint16_t color) {
@@ -158,6 +160,7 @@ static void drawStatus() {
   snprintf(buf, sizeof(buf), "%.0f KB/s", live ? kbps : 0.0f);
   text(sta, FONT_SMALL, buf, 120, 172, textdatum_t::middle_center, DIM);
   const String ip = netIp();
+  if (!deskmonInOther) text(sta, FONT_SMALL, "Chưa có DeskMon dự phòng", 120, 194, textdatum_t::middle_center, WARN);
   text(sta, FONT_SMALL, ip.length() ? ip.c_str() : "Chưa có WiFi", 120, 214, textdatum_t::middle_center, DIM);
 }
 
@@ -188,12 +191,14 @@ static void webStatus(JsonObject out) {
   out["decodeErrors"] = decodeErrors;
   out["serialRxErrors"] = serialRxErrors;
   out["heap"] = ESP.getFreeHeap();
+  out["deskmonSlot"] = deskmonInOther;      // false: PC tắt sẽ không về DeskMon được, PC tự nạp lại
+  out["resetReason"] = (int)esp_reset_reason();   // 1 cắm điện, 3 khởi động lại, 4 lỗi, 9 sụt nguồn
   out["uptime"] = millis() / 1000;
   out["rssi"] = WiFi.RSSI();
 }
 
 // ---------------------------------------------------------------- nhận gói
-static bool readExact(Stream& s, uint8_t* dst, size_t n) {
+static bool readExact(Stream& s, uint8_t* dst, size_t n, uint32_t timeoutMs) {
   size_t got = 0;
   uint32_t last = millis();
   while (got < n) {
@@ -201,7 +206,7 @@ static bool readExact(Stream& s, uint8_t* dst, size_t n) {
     if (a > 0) {
       got += s.readBytes(dst + got, min((size_t)a, n - got));
       last = millis();
-    } else if (millis() - last > READ_TIMEOUT_MS) {
+    } else if (millis() - last > timeoutMs) {
       return false;
     } else {
       delay(0);
@@ -264,18 +269,19 @@ static void handlePacket(Stream& s, uint8_t type, uint8_t screen, uint16_t x, ui
 }
 
 static void processOne(Stream& s, const char* name) {
+  const uint32_t timeout = (&s == &Serial) ? READ_TIMEOUT_USB_MS : READ_TIMEOUT_TCP_MS;
   while (s.available() > 0) {
     if (s.read() != MAGIC0) continue;
     uint8_t m;
-    if (!readExact(s, &m, 1) || m != MAGIC1) continue;
+    if (!readExact(s, &m, 1, timeout) || m != MAGIC1) continue;
     uint8_t h[HEADER_LEN - 2];
-    if (!readExact(s, h, sizeof(h))) return;
+    if (!readExact(s, h, sizeof(h), timeout)) return;
     const uint8_t type = h[0];
     const uint16_t x = h[2] | (h[3] << 8), y = h[4] | (h[5] << 8);
     const uint32_t len = (uint32_t)h[6] | ((uint32_t)h[7] << 8) | ((uint32_t)h[8] << 16) | ((uint32_t)h[9] << 24);
     const uint32_t crc = (uint32_t)h[10] | ((uint32_t)h[11] << 8) | ((uint32_t)h[12] << 16) | ((uint32_t)h[13] << 24);
     const uint32_t t0 = millis();
-    const bool got = len <= MAX_PAYLOAD && (len == 0 || readExact(s, payload, len));
+    const bool got = len <= MAX_PAYLOAD && (len == 0 || readExact(s, payload, len, timeout));
     waitMs += millis() - t0;
     if (!got) {
       frameBad = true;
@@ -305,13 +311,45 @@ static void pollTcp() {
 
 // Vùng firmware còn lại chứa DeskMon (nạp qua WiFi luôn ghi vào vùng không chạy). Ảnh không hợp lệ
 // thì esp_ota_set_boot_partition từ chối và màn phụ chạy tiếp.
+// "DESKMON_READY" (DeskMon in ra lúc khởi động) lưu dạng XOR, để chính firmware này không chứa chuỗi đó
+// và không tự nhận nhầm mình là DeskMon khi dò vùng còn lại.
+static const uint8_t DESKMON_MARK[] = {0x1E, 0x1F, 0x09, 0x11, 0x17, 0x15, 0x14, 0x05, 0x08, 0x1F, 0x1B, 0x1E, 0x03};
+static volatile uint8_t markKey = 0x5A;     // volatile: trình dịch không gộp sẵn thành chuỗi gốc
+static uint8_t scanBuf[4096 + sizeof(DESKMON_MARK)];
+
+static bool otherSlotHasDeskMon() {
+  const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
+  if (!other) return false;
+  constexpr size_t MLEN = sizeof(DESKMON_MARK), CHUNK = 4096;
+  uint8_t mark[MLEN];
+  for (size_t i = 0; i < MLEN; i++) mark[i] = DESKMON_MARK[i] ^ markKey;
+  size_t carry = 0;
+  for (size_t off = 0; off < other->size; off += CHUNK) {
+    const size_t n = min(CHUNK, (size_t)(other->size - off));
+    if (esp_partition_read(other, off, scanBuf + carry, n) != ESP_OK) return false;
+    const size_t total = carry + n;
+    for (size_t i = 0; i + MLEN <= total; i++) {
+      if (scanBuf[i] == mark[0] && memcmp(scanBuf + i, mark, MLEN) == 0) return true;
+    }
+    carry = min(MLEN - 1, total);              // giữ đuôi phòng chuỗi nằm vắt qua 2 lần đọc
+    memmove(scanBuf, scanBuf + total - carry, carry);
+  }
+  return false;
+}
+
+// Gọi sau khi PC nạp DeskMon vào vùng còn lại qua /api/deskmon (màn phụ vẫn chạy tiếp)
+static bool onDeskmonWritten() {
+  otaPercent = -2;
+  idleShown = true;                           // màn 2.0" đang hiện tiến độ nạp: PC phải gửi lại toàn màn
+  deskmonInOther = otherSlotHasDeskMon();
+  return deskmonInOther;
+}
+
 static void switchToDeskMon() {
-  static bool tried = false;
-  if (tried) return;
-  tried = true;
+  if (!deskmonInOther) return;                // vùng còn lại không phải DeskMon: ở lại màn phụ
   const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
   if (!other || esp_ota_set_boot_partition(other) != ESP_OK) {
-    Serial.println("[switch] khong co DeskMon o vung con lai");
+    deskmonInOther = false;
     return;
   }
   lcd.fillScreen(BG);
@@ -358,8 +396,10 @@ void setup() {
   sta.setRotation(0);
   sta.setBrightness(180);
   drawIdle();
+  deskmonInOther = otherSlotHasDeskMon();
+  Serial.println(deskmonInOther ? "[slot] DeskMon o vung con lai: co" : "[slot] DeskMon o vung con lai: khong");
   drawStatus();
-  netBegin(NetHooks{webStatus, showOtaProgress});
+  netBegin(NetHooks{webStatus, showOtaProgress, onDeskmonWritten});
   Serial.println("MAN_PHU_READY");
 }
 
