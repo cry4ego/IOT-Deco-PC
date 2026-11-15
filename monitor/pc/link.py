@@ -41,6 +41,15 @@ class LinkError(Exception):
     pass
 
 
+class HandshakeError(LinkError):
+    """Nối được nhưng ESP32 không trả lời bắt tay: thường là board đang chạy DeskMon.
+    usb_port: cổng COM nếu đang thử qua cáp USB (khi đó có thể nạp lại qua USB)."""
+
+    def __init__(self, message: str, usb_port: Optional[str] = None):
+        super().__init__(message)
+        self.usb_port = usb_port
+
+
 def build_packet(ptype: int, x: int = 0, y: int = 0, payload: bytes = b"", screen: int = 0) -> bytes:
     """screen: 0 = màn 2.0" (màn hình phụ), 1 = màn 1.54" (trang thông số)."""
     return MAGIC + struct.pack("<BBHHII", ptype, screen, x, y, len(payload), zlib.crc32(payload)) + payload
@@ -227,6 +236,7 @@ class SerialLink:
         self.ser.open()
         time.sleep(0.2)
         self.ser.reset_input_buffer()
+        self.port = port
         self.name = f"USB {port} @ {baud}"
         self.replies: deque[int] = deque()
 
@@ -313,7 +323,8 @@ def handshake(link):
         link.write(build_packet(HELLO))
         if link.read_reply(0.5) == ACK:
             return
-    raise LinkError("Không bắt tay được với ESP32 (đúng firmware màn hình phụ chưa? DeskMon cũ còn chạy?)")
+    raise HandshakeError("Không bắt tay được với ESP32 (đúng firmware màn hình phụ chưa? DeskMon cũ còn chạy?)",
+                         usb_port=getattr(link, "port", None))
 
 
 def open_link(port: Optional[str], baud: int, host: Optional[str], tcp_port: int, default_host: str):

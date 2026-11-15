@@ -420,12 +420,12 @@ def test_restart_command_reruns_this_script_with_the_same_arguments(tmp_path):
     assert cmd == ["pythonw.exe", str(script), "--log-file", "man_phu.log"]
 
 
-@pytest.mark.parametrize("outcome, wait_s", [(None, 10.0), (True, 10.0), (False, 300.0)])
-def test_reflash_waits_long_only_after_a_real_flash_failure(monkeypatch, outcome, wait_s):
+@pytest.mark.parametrize("outcome, wait_s", [(None, 10.0), (True, 10.0), (False, 30.0)])
+def test_reflash_retries_soon_and_only_backs_off_after_real_failures(monkeypatch, outcome, wait_s):
     import types
 
     import man_phu
-    monkeypatch.setattr(man_phu, "reflash_if_deskmon", lambda host, fw: outcome)
+    monkeypatch.setattr(man_phu, "reflash_if_deskmon", lambda host, fw, on_flash=None: outcome)
     app = man_phu.App(types.SimpleNamespace(no_side=True, host=None, firmware="fw.bin"))
     before = time.monotonic()
 

@@ -88,13 +88,34 @@ Tuỳ chọn khác: `--monitor N` (chọn màn theo số trong `--list`), `--por
 - Chỉ một bản chạy một lúc. Mở thêm bản nữa thì bản mới tự thoát, log ghi "đang chạy ở một bản khác".
 - Muốn tắt hẳn: `taskkill /IM pythonw.exe /F` (cũng tắt các chương trình pythonw khác nếu có).
 
+## Bảng điều khiển (`bang_dieu_khien.py`)
+
+Cửa sổ nhỏ mở cùng Windows (shortcut `Bang dieu khien man phu.lnk` trong `shell:startup` và trên Desktop). Nhìn một cái là biết màn phụ đang ổn hay hỏng ở đâu:
+
+- **Dòng kết luận** (xanh / vàng / đỏ) kèm việc nên làm. Ví dụ: "Màn phụ đang chạy tốt", "Đang nạp lại firmware màn phụ (đừng rút điện board)", "Nạp firmware lỗi, tự thử lại sau 30 giây", "Windows chưa nhận màn hình ảo", "Chương trình màn phụ không chạy".
+- **Từng phần:** chương trình màn phụ, màn hình ảo của Windows, đường truyền (khung/giây, KB/s), cáp USB, firmware trên board, DeskMon dự phòng, sóng WiFi của board, LibreHardwareMonitor, lỗi gần nhất.
+- **Nút bấm:** Chạy màn phụ, Khởi động lại, Dừng, Mở log, Trang board, Cài đặt màn hình.
+- **Nhật ký:** những dòng log cuối, lỗi tô đỏ, cảnh báo tô vàng.
+
+Chương trình màn phụ ghi trạng thái của nó vào `pc/man_phu_status.json` vài giây một lần. Bảng điều khiển đọc file đó, nên biết được cả lúc chương trình đang nạp firmware hay đang kẹt. Mở bằng tay: bấm đúp `pc\bang_dieu_khien.bat` hoặc shortcut trên Desktop. Mỗi lúc chỉ mở được một cửa sổ.
+
 ## 4. PC bật: màn phụ. PC tắt: DeskMon
 
 ESP32 có hai vùng firmware: một vùng giữ DeskMon, một vùng giữ màn phụ.
 
 - **PC tắt / ngủ:** 90 giây không có hình, firmware màn phụ tự khởi động sang DeskMon. Màn lại là đồng hồ, thời tiết, tin tức như cũ.
-- **PC bật:** `man_phu.py` thấy ESP32 đang chạy DeskMon thì tự nạp lại firmware màn phụ qua WiFi (khoảng 20 giây), rồi hiện hình. Từ lúc Windows mở chương trình tới lúc có hình mất khoảng 1 phút. Chưa hỏi được ESP32 (mới bật WiFi, mDNS chưa trả lời) thì 10 giây sau hỏi lại. Chỉ khi nạp thật sự lỗi mới chờ 5 phút rồi thử lại.
+- **PC bật:** `man_phu.py` thấy ESP32 đang chạy DeskMon thì tự nạp lại firmware màn phụ qua WiFi (khoảng 20 giây), rồi hiện hình. Từ lúc Windows mở chương trình tới lúc có hình mất khoảng 1 phút. Chưa hỏi được ESP32 (mới bật WiFi, mDNS chưa trả lời) thì 10 giây sau hỏi lại. Nạp lỗi (ví dụ đứt giữa chừng lúc board vừa bật) thì thử lại sau 30 giây, rồi 1 phút, 2 phút, sau đó 5 phút một lần.
 - Tên `deskmon.local` (mDNS) trên Windows thỉnh thoảng không trả lời, nên chương trình nối lại bằng IP của lần kết nối trước.
+- **Có cắm cáp USB dữ liệu:** không cần WiFi. Bắt tay qua USB lỗi hai lần (board đang chạy DeskMon) thì chương trình dùng esptool (`pc/usb_flash.py`):
+  1. đọc otadata và 16 KB đầu hai vùng để biết vùng nào là DeskMon;
+  2. ghi màn phụ vào vùng **không** chứa DeskMon, ghi xong hẳn mới đổi vùng khởi động.
+
+  Thời gian đo được ngày 15/11:
+  - vùng màn phụ còn tốt thì chỉ cần đổi vùng khởi động, mất 6 giây (có hình 24 giây sau khi chương trình chạy);
+  - vùng màn phụ hỏng thì phải ghi lại cả firmware, mất 19 giây.
+
+  Đây là cách sửa lỗi "Không bắt tay được với ESP32": một lần nạp qua WiFi bị ngắt giữa chừng làm vùng màn phụ hỏng, còn web của DeskMon thì cắt mọi kết nối, nên không nạp lại qua WiFi được.
+- **Đừng dừng hay khởi động lại chương trình lúc đang nạp.** Bảng điều khiển sẽ hỏi lại trước khi làm vậy, và ghi mỗi lần bấm nút vào `man_phu.log`.
 
 Cần: ESP32 vào được WiFi nhà, và `monitor\.pio\build\esp32dev\firmware.bin` có sẵn (build ở thư mục `monitor/` là có).
 

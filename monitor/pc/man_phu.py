@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -23,7 +26,9 @@ from PIL import Image
 
 from capture import Grabber, Monitor, fit_rect, list_monitors, parse_region, pick_virtual, set_dpi_aware
 from guard import Watchdog, acquire_single_instance, restart_self
-from link import FrameSender, LinkError, address_of, open_link
+import status_file as st
+import usb_flash
+from link import FrameSender, HandshakeError, LinkError, address_of, open_link
 from side_view import DEFAULT_LHM_URL, SideView
 
 log = logging.getLogger("man_phu")
@@ -39,14 +44,23 @@ BYTES_IN_FLIGHT = 40000        # < bộ đệm nhận 48 KB của ESP32 (Serial.
 # PC tắt thì ESP32 tự chuyển sang DeskMon; bật PC lên thì nạp lại firmware màn phụ qua WiFi
 FIRMWARE = Path(__file__).resolve().parent.parent / ".pio" / "build" / "esp32dev" / "firmware.bin"
 DESKMON_FIRMWARE = Path(__file__).resolve().parents[2] / ".pio" / "build" / "ota" / "firmware.bin"
-REFLASH_EVERY_S = 300.0        # nạp lỗi thì 5 phút sau mới thử lại
-REFLASH_CHECK_S = 10.0         # chưa nối được: cứ chừng này hỏi xem ESP32 có đang chạy DeskMon không
+REFLASH_EVERY_S = 300.0        # kiểm tra / nạp DeskMon vào vùng dự phòng tối đa 5 phút một lần
+# Nạp màn phụ lỗi (log 14/11 17:28: đứt giữa chừng lúc mới mở máy) thì thử lại dần thưa ra,
+# trước đây chờ luôn 5 phút nên mở máy lên chỉ thấy DeskMon
+REFLASH_BACKOFF_S = (30.0, 60.0, 120.0, 300.0)
+REFLASH_CHECK_S = 10.0        # chưa nối được: cứ chừng này hỏi xem ESP32 có đang chạy DeskMon không
 REFLASH_TIMEOUT_S = 180
 REBOOT_WAIT_S = 20.0
 RATE_WINDOW_S = 2.0
 # Vòng chính kẹt quá chừng này thì tự chạy lại (< 90 giây ESP32 chờ trước khi về DeskMon)
 WATCHDOG_S = 45.0
 LONG_WORK_S = REFLASH_TIMEOUT_S + REBOOT_WAIT_S + 60    # nạp firmware: được phép lâu hơn
+CONNECT_BUSY_S = 30.0          # nối ESP32 (thử IP cũ, hỏi tên, bắt tay) lâu nhất chừng này
+# Cắm cáp USB mà bắt tay lỗi liền chừng này lần (board đang chạy DeskMon) thì nạp màn phụ qua USB:
+# không cần WiFi / web DeskMon (log 15/11: web DeskMon hỏng sau một lần nạp WiFi bị ngắt giữa chừng)
+USB_HANDSHAKE_FAILS = 2
+USB_FLASH_EVERY_S = 60.0       # nạp qua USB xong mà vẫn không bắt tay được: không nạp liên tục
+USB_BOOT_WAIT_S = 4.0
 
 
 def describe(monitors: list[Monitor]) -> str:
@@ -88,7 +102,7 @@ def board_status(host: str) -> tuple[str | None, dict | None]:
     return None, None
 
 
-def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
+def install_deskmon_if_missing(host: str, firmware: Path, on_flash=None) -> bool:
     """Nạp DeskMon vào vùng firmware còn lại; màn phụ vẫn chạy, không khởi động lại. True nếu đã nạp."""
     host, status = board_status(host)
     if status is None or not needs_deskmon(status):
@@ -97,6 +111,8 @@ def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
         log.error("Vùng còn lại của ESP32 không có DeskMon và không thấy %s (build DeskMon ở thư mục gốc)", firmware)
         return False
     log.info("Vùng còn lại của ESP32 không có DeskMon (PC tắt sẽ không về DeskMon được), nạp lại DeskMon...")
+    if on_flash:
+        on_flash()
     with firmware.open("rb") as f:
         resp = requests.post(f"http://{host}/api/deskmon", files={"firmware": f}, timeout=REFLASH_TIMEOUT_S)
     ok = resp.ok and resp.json().get("deskmon") is True
@@ -104,7 +120,7 @@ def install_deskmon_if_missing(host: str, firmware: Path) -> bool:
     return ok
 
 
-def reflash_if_deskmon(host: str, firmware: Path) -> bool | None:
+def reflash_if_deskmon(host: str, firmware: Path, on_flash=None) -> bool | None:
     """ESP32 đang chạy DeskMon (do PC vừa tắt) thì nạp lại firmware màn phụ.
     True: đã nạp. False: nạp lỗi. None: không cần nạp hoặc chưa hỏi được ESP32."""
     host, status = board_status(host)
@@ -114,6 +130,8 @@ def reflash_if_deskmon(host: str, firmware: Path) -> bool | None:
         log.error("ESP32 đang chạy DeskMon nhưng không thấy %s (build ở thư mục monitor/ trước)", firmware)
         return False
     log.info("ESP32 đang chạy DeskMon, nạp lại firmware màn phụ qua WiFi...")
+    if on_flash:
+        on_flash()
     with firmware.open("rb") as f:
         resp = requests.post(f"http://{host}/update", files={"firmware": f}, timeout=REFLASH_TIMEOUT_S)
     if not resp.ok:
@@ -134,9 +152,14 @@ def to_screen(rgb: np.ndarray) -> Image.Image:
 
 
 class App:
-    def __init__(self, args, watchdog: Watchdog | None = None):
+    def __init__(self, args, watchdog: Watchdog | None = None, status: st.StatusWriter | None = None):
         self.args = args
         self.watchdog = watchdog
+        self.status = status                          # cho bảng điều khiển (bang_dieu_khien.py) đọc
+        self.reflash_failures = 0
+        self.usb_failures = 0                         # số lần bắt tay qua USB lỗi liền nhau
+        self.usb_flash_failures = 0
+        self.next_usb_flash = 0.0
         self.link = None
         self.sender: FrameSender | None = None
         self.grabber: Grabber | None = None
@@ -176,10 +199,15 @@ class App:
     def connect(self):
         a = self.args
         self.link = open_link(a.port, a.baud, a.host, a.tcp_port, DEFAULT_HOST)
-        self.beat(LONG_WORK_S)                            # có thể phải nạp DeskMon vào vùng còn lại
+        self.usb_failures = 0
+        self.beat(LONG_WORK_S)                           # có thể phải nạp DeskMon vào vùng còn lại
         self.ensure_deskmon()
         self.beat()
         self.sender = FrameSender(self.link, in_flight=FRAMES_IN_FLIGHT, threaded=True, max_bytes=BYTES_IN_FLIGHT)
+        host = a.host or DEFAULT_HOST
+        ip = address_of(host)
+        self.report(state=st.CONNECTED, link=self.link.name, detail="", retry_at=0.0,
+                    board_ip=ip if ip != host else "")
 
     def ensure_deskmon(self):
         """Mỗi lần nối lại thì kiểm tra; nạp lỗi thì chờ REFLASH_EVERY_S mới thử tiếp."""
@@ -187,7 +215,8 @@ class App:
             return
         self.next_deskmon_check = time.monotonic() + REFLASH_EVERY_S
         try:
-            install_deskmon_if_missing(self.args.host or DEFAULT_HOST, Path(self.args.deskmon_firmware))
+            install_deskmon_if_missing(self.args.host or DEFAULT_HOST, Path(self.args.deskmon_firmware),
+                                       on_flash=lambda: self.report(state=st.INSTALLING_DESKMON, busy_s=LONG_WORK_S))
         except requests.RequestException as e:
             log.error("Nạp DeskMon vào vùng còn lại lỗi: %s", e)
 
@@ -207,6 +236,14 @@ class App:
         if self.watchdog:
             self.watchdog.beat(grace_s)
 
+    def report(self, busy_s: float = 0.0, **fields):
+        if self.status:
+            self.status.update(busy_s, **fields)
+
+    def report_error(self, message: str, **fields):
+        if self.status:
+            self.status.error(message, **fields)
+
     def tick(self):
         side = self.side.image() if self.side else None
         sent = self.sender.send(to_screen(self.grabber.grab()), side=side)
@@ -215,9 +252,11 @@ class App:
         self.rate_bytes += sent
         self.rate_frames += 1
         span = time.monotonic() - self.rate_since
-        if self.side and span >= RATE_WINDOW_S:
-            self.side.set_link_stats(self.rate_frames / span, self.rate_bytes / 1024 / span,
-                                     self.link.name, self.source)
+        if span >= RATE_WINDOW_S:
+            fps, kbps = self.rate_frames / span, self.rate_bytes / 1024 / span
+            if self.side:
+                self.side.set_link_stats(fps, kbps, self.link.name, self.source)
+            self.report(state=st.CONNECTED, fps=round(fps, 1), kbps=round(kbps, 1), link=self.link.name)
             self.rate_frames, self.rate_bytes, self.rate_since = 0, 0, time.monotonic()
         elapsed = time.monotonic() - self.stats_since
         if elapsed >= STATS_EVERY_S:
@@ -230,9 +269,11 @@ class App:
             self.beat()
             try:
                 if not self.ensure_source():
+                    self.report(state=st.NO_MONITOR, fps=0.0, kbps=0.0)
                     time.sleep(NO_MONITOR_RETRY_S)
                     continue
                 if self.link is None:
+                    self.report(state=self.waiting_state(), busy_s=CONNECT_BUSY_S)
                     self.connect()
                 t0 = time.monotonic()
                 self.tick()
@@ -241,27 +282,78 @@ class App:
                 raise
             except (LinkError, OSError) as e:
                 log.warning("Mất kết nối: %s, thử lại sau %.0f s", e, RETRY_S)
-                self.recover()
-            except Exception:                         # lỗi lạ: ghi lại rồi chạy tiếp, đừng tắt hẳn màn phụ
+                self.recover(f"Mất kết nối: {e}", e)
+            except Exception as e:                    # lỗi lạ: ghi lại rồi chạy tiếp, đừng tắt hẳn màn phụ
                 log.exception("Lỗi không lường trước, thử lại sau %.0f s", RETRY_S)
-                self.recover()
+                self.recover(f"Lỗi không lường trước: {e}")
 
-    def recover(self):
+    def waiting_state(self) -> str:
+        """Đang chờ tới lượt nạp lại sau một lần nạp lỗi, hay chỉ đang nối lại."""
+        if self.reflash_failures and time.monotonic() < self.next_reflash:
+            return st.RETRY_WAIT
+        return st.CONNECTING
+
+    def recover(self, reason: str, error: Exception | None = None):
         self.disconnect()
+        self.report_error(reason, state=self.waiting_state(), fps=0.0, kbps=0.0)
         self.beat(LONG_WORK_S)
-        self.maybe_reflash()
+        try:
+            usb_port = error.usb_port if isinstance(error, HandshakeError) else None
+            if not (usb_port and self.maybe_usb_flash(usb_port)):
+                self.maybe_reflash()
+        except Exception:                             # nạp lại lỗi bất ngờ: ghi lại, vòng sau thử tiếp
+            log.exception("Lỗi khi nạp lại firmware")
         time.sleep(RETRY_S)
+
+    def maybe_usb_flash(self, port: str) -> bool:
+        """Bắt tay qua USB lỗi: board đang chạy DeskMon (hoặc kẹt), nạp màn phụ qua USB.
+        True nếu USB lo việc này (đã nạp, hoặc đợi thêm một lần bắt tay cho chắc); False thì thử WiFi."""
+        self.usb_failures += 1
+        if self.usb_failures < USB_HANDSHAKE_FAILS:
+            return True
+        if time.monotonic() < self.next_usb_flash:
+            return False
+        log.info("Bắt tay qua USB %s không được (board đang chạy DeskMon?), nạp lại màn phụ qua cáp USB...", port)
+        self.report(state=st.REFLASHING, detail="qua cáp USB", busy_s=LONG_WORK_S)
+        try:
+            done = usb_flash.flash_monitor(port, Path(self.args.firmware))
+        except usb_flash.UsbFlashError as e:
+            wait = REFLASH_BACKOFF_S[min(self.usb_flash_failures, len(REFLASH_BACKOFF_S) - 1)]
+            self.usb_flash_failures += 1
+            self.next_usb_flash = time.monotonic() + wait
+            log.error("Nạp màn phụ qua USB lỗi: %s", e)
+            self.report_error(f"Nạp qua USB lỗi lần {self.usb_flash_failures}: {e}", state=st.RETRY_WAIT,
+                              detail="", retry_at=time.time() + wait)
+            return False
+        log.info("Nạp qua USB xong: %s", done)
+        self.usb_failures = self.usb_flash_failures = 0
+        self.next_usb_flash = time.monotonic() + USB_FLASH_EVERY_S
+        self.report(state=st.CONNECTING, detail="", retry_at=0.0)
+        time.sleep(USB_BOOT_WAIT_S)                   # chờ firmware màn phụ khởi động
+        return True
 
     def maybe_reflash(self):
         if time.monotonic() < self.next_reflash:
             return
+        error = ""
         try:
-            done = reflash_if_deskmon(self.args.host or DEFAULT_HOST, Path(self.args.firmware))
+            done = reflash_if_deskmon(self.args.host or DEFAULT_HOST, Path(self.args.firmware),
+                                      on_flash=lambda: self.report(state=st.REFLASHING, detail="qua WiFi",
+                                                                   busy_s=LONG_WORK_S))
         except requests.RequestException as e:
             log.error("Nạp firmware màn phụ lỗi: %s", e)
-            done = False
-        # Chỉ chờ lâu khi nạp thật sự lỗi; chưa hỏi được ESP32 thì hỏi lại sớm
-        self.next_reflash = time.monotonic() + (REFLASH_EVERY_S if done is False else REFLASH_CHECK_S)
+            done, error = False, str(e)
+        if done is False:
+            wait = REFLASH_BACKOFF_S[min(self.reflash_failures, len(REFLASH_BACKOFF_S) - 1)]
+            self.reflash_failures += 1
+            self.report_error(f"Nạp firmware màn phụ lỗi lần {self.reflash_failures}: {error or 'xem log'}",
+                              state=st.RETRY_WAIT, retry_at=time.time() + wait)
+        else:
+            wait = REFLASH_CHECK_S                    # chưa hỏi được ESP32 / không cần nạp: hỏi lại sớm
+            if done:
+                self.reflash_failures = 0
+                self.report(state=st.CONNECTING, retry_at=0.0)
+        self.next_reflash = time.monotonic() + wait
 
 
 def main():
@@ -289,15 +381,24 @@ def main():
                         filename=args.log_file, encoding="utf-8")
     set_dpi_aware()
     if args.list:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # tên màn có dấu tiếng Việt
         print(describe(list_monitors()))
         return
     if not acquire_single_instance():
         log.error("Màn phụ đang chạy ở một bản khác, bản này thoát")
         return
+    # Chạy ẩn bằng pythonw thì lỗi làm dừng chương trình không hiện ở đâu cả: ghi vào log
+    sys.excepthook = lambda t, e, tb: log.critical("Lỗi làm dừng chương trình", exc_info=(t, e, tb))
+    threading.excepthook = lambda a: log.critical("Lỗi trong luồng %s", a.thread.name if a.thread else "?",
+                                                  exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+    log.info("Bắt đầu chạy (tiến trình %d)", os.getpid())
+    status = st.StatusWriter()
+    status.update(state=st.STARTING)
     script = Path(__file__).resolve()
     watchdog = Watchdog(WATCHDOG_S, lambda: restart_self(script, f"Vòng chính đứng quá {WATCHDOG_S:.0f} giây"))
     watchdog.start()
-    App(args, watchdog).run()
+    App(args, watchdog, status).run()
 
 
 if __name__ == "__main__":

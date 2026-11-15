@@ -74,7 +74,7 @@ def restart_self(script: Path, reason: str):
 _instance_handle: Optional[int] = None
 
 
-def acquire_single_instance(wait_s: float = INSTANCE_WAIT_S) -> bool:
+def acquire_single_instance(wait_s: float = INSTANCE_WAIT_S, name: str = MUTEX_NAME) -> bool:
     """True nếu đây là bản duy nhất. Khoá (mutex của Windows) tự nhả khi tiến trình thoát."""
     global _instance_handle
     if os.name != "nt":
@@ -85,7 +85,7 @@ def acquire_single_instance(wait_s: float = INSTANCE_WAIT_S) -> bool:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     deadline = time.monotonic() + wait_s
     while True:
-        handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        handle = kernel32.CreateMutexW(None, False, name)
         if handle and ctypes.get_last_error() != ERROR_ALREADY_EXISTS:
             _instance_handle = handle
             return True
