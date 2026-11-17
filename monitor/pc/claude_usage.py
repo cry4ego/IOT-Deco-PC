@@ -178,13 +178,21 @@ class UsageWatcher:
         self.next_fetch = 0.0
         self.reset_until = 0.0
         self._announced_reset: Optional[datetime] = None
+        self._last_fetch: Optional[float] = None
+        self.refresh_s, self.hot_pct, self.reset_show_s = REFRESH_S, HOT_PCT, RESET_SHOW_S
+
+    def configure(self, refresh_s: float, hot_pct: float, reset_show_s: float):
+        """Cài đặt từ bảng điều khiển. Rút ngắn chu kỳ hỏi thì có hiệu lực ngay."""
+        self.refresh_s, self.hot_pct, self.reset_show_s = refresh_s, hot_pct, reset_show_s
+        if self._last_fetch is not None and not self.error:
+            self.next_fetch = min(self.next_fetch, self._last_fetch + refresh_s)
 
     def tick(self):
         now = self.wall()
         session_end = self.usage.session.resets_at if self.usage else None
         if session_end and now >= session_end and self._announced_reset != session_end:
             self._announced_reset = session_end              # tới giờ hồi: báo ngay, hỏi số liệu mới sớm
-            self.reset_until = self.mono() + RESET_SHOW_S
+            self.reset_until = self.mono() + self.reset_show_s
             self.next_fetch = min(self.next_fetch, self.mono() + AFTER_RESET_S)
             log.info("Claude: đã tới giờ hồi phiên 5 giờ")
         if self.mono() >= self.next_fetch:
@@ -205,9 +213,10 @@ class UsageWatcher:
         if self.usage is None or self.error:
             log.info("Claude: phiên 5 giờ %s%%, tuần %s%%", _pct_log(usage.session), _pct_log(usage.week))
         self.usage, self.error = usage, ""
+        self._last_fetch = self.mono()
         end = usage.session.resets_at
         just_reset = end is not None and end <= now < end + AFTER_RESET_WINDOW   # máy chủ chưa kịp sang phiên mới
-        self.next_fetch = self.mono() + (AFTER_RESET_S if just_reset else REFRESH_S)
+        self.next_fetch = self.mono() + (AFTER_RESET_S if just_reset else self.refresh_s)
 
     def mode(self) -> str:
         if self.mono() < self.reset_until:
@@ -215,7 +224,20 @@ class UsageWatcher:
         if self.usage is None:
             return MODE_OFF
         pct = active(self.usage.session, self.wall()).pct
-        return MODE_HOT if pct is not None and pct >= HOT_PCT else MODE_NORMAL
+        return MODE_HOT if pct is not None and pct >= self.hot_pct else MODE_NORMAL
+
+    def to_dict(self) -> dict:
+        """Số liệu cho bảng điều khiển (qua man_phu_status.json). Không có token."""
+        u = self.usage
+        model = {"name": u.model[0], **_limit_dict(u.model[1])} if u and u.model else None
+        return {"session": _limit_dict(active(u.session, self.wall())) if u else None,
+                "week": _limit_dict(u.week) if u else None, "model": model,
+                "fetched_at": u.fetched_at.isoformat() if u else None,
+                "error": self.error, "mode": self.mode(), "hot_pct": self.hot_pct}
+
+
+def _limit_dict(limit: Limit) -> dict:
+    return {"pct": limit.pct, "resets_at": limit.resets_at.isoformat() if limit.resets_at else None}
 
 
 def _pct_log(limit: Limit) -> str:

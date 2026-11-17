@@ -26,9 +26,10 @@ from PIL import Image
 
 from capture import Grabber, Monitor, fit_rect, list_monitors, parse_region, pick_virtual, set_dpi_aware
 from guard import Watchdog, acquire_single_instance, restart_self
+import settings as cfg
 import status_file as st
 import usb_flash
-from link import FrameSender, HandshakeError, LinkError, address_of, open_link
+from link import FrameSender, HandshakeError, LinkError, SerialLink, address_of, open_link
 from side_view import DEFAULT_LHM_URL, SideView
 
 log = logging.getLogger("man_phu")
@@ -156,6 +157,8 @@ class App:
         self.args = args
         self.watchdog = watchdog
         self.status = status                          # cho bảng điều khiển (bang_dieu_khien.py) đọc
+        self.settings = cfg.SettingsWatcher()         # khung hình tối đa, đường truyền: chỉnh từ bảng điều khiển
+        self.link_pref = ""                           # đường truyền của kết nối hiện tại (auto/usb/wifi)
         self.reflash_failures = 0
         self.usb_failures = 0                         # số lần bắt tay qua USB lỗi liền nhau
         self.usb_flash_failures = 0
@@ -196,9 +199,24 @@ class App:
                     self.sender.forget()
         return self.grabber is not None
 
+    def link_target(self, pref: str) -> tuple[str | None, str | None]:
+        """(cổng COM, máy WiFi) cho open_link. --port / --host trên dòng lệnh thắng cài đặt."""
+        a = self.args
+        if a.port or a.host or pref == "auto":
+            return a.port, a.host
+        if pref == "wifi":
+            return None, DEFAULT_HOST
+        port = SerialLink.find_port()
+        if not port:
+            raise LinkError("Cài đặt chọn \"Chỉ cáp USB\" nhưng chưa thấy cáp USB dữ liệu")
+        return port, None
+
     def connect(self):
         a = self.args
-        self.link = open_link(a.port, a.baud, a.host, a.tcp_port, DEFAULT_HOST)
+        pref = self.settings.current()["stream_link"]
+        port, host = self.link_target(pref)
+        self.link = open_link(port, a.baud, host, a.tcp_port, DEFAULT_HOST)
+        self.link_pref = pref
         self.usb_failures = 0
         self.beat(LONG_WORK_S)                           # có thể phải nạp DeskMon vào vùng còn lại
         self.ensure_deskmon()
@@ -256,7 +274,8 @@ class App:
             fps, kbps = self.rate_frames / span, self.rate_bytes / 1024 / span
             if self.side:
                 self.side.set_link_stats(fps, kbps, self.link.name, self.source)
-            self.report(state=st.CONNECTED, fps=round(fps, 1), kbps=round(kbps, 1), link=self.link.name)
+            self.report(state=st.CONNECTED, fps=round(fps, 1), kbps=round(kbps, 1), link=self.link.name,
+                        **(self.side.snapshot() if self.side else {}))
             self.rate_frames, self.rate_bytes, self.rate_since = 0, 0, time.monotonic()
         elapsed = time.monotonic() - self.stats_since
         if elapsed >= STATS_EVERY_S:
@@ -264,14 +283,24 @@ class App:
             self.frames, self.bytes, self.stats_since = 0, 0, time.monotonic()
 
     def run(self):
-        period = 1.0 / max(1.0, self.args.fps)
+        applied = None
         while True:
             self.beat()
+            values = self.settings.current()
+            if values != applied:
+                if applied is not None:
+                    changed = {k: v for k, v in values.items() if applied.get(k) != v}
+                    log.info("Áp dụng cài đặt mới từ bảng điều khiển: %s", changed)
+                applied = values
+            period = 1.0 / max(1.0, min(self.args.fps, values["stream_fps"]))
             try:
                 if not self.ensure_source():
                     self.report(state=st.NO_MONITOR, fps=0.0, kbps=0.0)
                     time.sleep(NO_MONITOR_RETRY_S)
                     continue
+                if self.link is not None and values["stream_link"] != self.link_pref:
+                    log.info("Đổi đường truyền theo cài đặt: %s", values["stream_link"])
+                    self.disconnect()
                 if self.link is None:
                     self.report(state=self.waiting_state(), busy_s=CONNECT_BUSY_S)
                     self.connect()

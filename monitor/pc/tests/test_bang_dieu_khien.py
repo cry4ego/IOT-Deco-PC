@@ -196,7 +196,7 @@ def test_status_says_reflashing_while_the_upload_runs(monkeypatch, tmp_path):
 
 # ---------------------------------------------------------------- bảng điều khiển
 def test_tail_lines_reads_only_the_end_of_the_log(tmp_path):
-    from bang_dieu_khien import tail_lines
+    from program_ctl import tail_lines
     log = tmp_path / "man_phu.log"
     log.write_text("\n".join(f"dòng {i}" for i in range(5000)), encoding="utf-8")
 
@@ -207,7 +207,7 @@ def test_tail_lines_reads_only_the_end_of_the_log(tmp_path):
 def test_pid_alive_knows_this_process_and_rejects_nonsense():
     import os
 
-    from bang_dieu_khien import pid_alive
+    from program_ctl import pid_alive
 
     assert pid_alive(os.getpid())
     assert not pid_alive(0)

@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="dash-token" content="__DASH_TOKEN__">
+<title>DeskMon · Bảng điều khiển</title>
+<style>
+:root{--bg:#07090d;--panel:#0c1016;--panel2:#10151d;--line:#1a212c;--line2:#263041;--text:#e6edf3;--dim:#8b949e;--mute:#5b6573;
+--accent:#38bdf8;--violet:#a78bfa;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444;--r:12px;
+--mono:"Cascadia Mono","Cascadia Code",Consolas,monospace;--sans:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);background-image:radial-gradient(#ffffff0a 1px,transparent 1px);background-size:22px 22px;
+color:var(--text);font:14px/1.5 var(--sans);min-height:100vh}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.dim{color:var(--dim)}.mute{color:var(--mute)}
+button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:7px 14px;cursor:pointer}
+button:hover{border-color:var(--accent)}button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);color:#04121b;border-color:var(--accent);font-weight:600}
+button.danger{color:#fca5a5}button.danger:hover{border-color:var(--bad)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+header{display:flex;align-items:center;gap:16px;padding:14px 22px;border-bottom:1px solid var(--line);background:#07090dcc;position:sticky;top:0;z-index:5;backdrop-filter:blur(6px)}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);letter-spacing:.14em;font-size:13px}
+.brand b{font-weight:600}.brand .slash{color:var(--mute)}.brand .sub{color:var(--dim);letter-spacing:.04em;font-family:var(--sans)}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;border:1px solid var(--line2);border-radius:999px;font-size:13px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute);flex:none}
+.lv-ok{--lv:var(--ok)}.lv-warn{--lv:var(--warn)}.lv-bad{--lv:var(--bad)}
+.lv-ok .dot,.lv-warn .dot,.lv-bad .dot,.dot.lv-ok,.dot.lv-warn,.dot.lv-bad{background:var(--lv);box-shadow:0 0 0 3px color-mix(in srgb,var(--lv) 22%,transparent)}
+.hdr-right{margin-left:auto;display:flex;align-items:center;gap:16px}
+#clock{font-size:15px}
+main{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;padding:18px 22px 28px;max-width:1440px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;min-width:0}
+.s12{grid-column:1/-1}.s7{grid-column:span 7}.s5{grid-column:span 5}.s4{grid-column:span 4}.s3{grid-column:span 3}
+@media (max-width:1150px){.s7,.s5,.s4,.s3{grid-column:span 6}}
+@media (max-width:760px){main{grid-template-columns:1fr;padding:14px 16px}.s12,.s7,.s5,.s4,.s3{grid-column:auto}header{flex-wrap:wrap;padding:12px 16px}}
+.ch{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.ch .t{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+.ch .t::before{content:"";display:inline-block;width:6px;height:6px;background:var(--accent);margin-right:8px;vertical-align:1px}
+.ch .meta{margin-left:auto;font-size:12px;color:var(--mute)}
+.chip{font-family:var(--mono);font-size:11px;padding:2px 8px;border:1px solid var(--line2);border-radius:6px;color:var(--dim)}
+.chip.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.hero{display:flex;align-items:center;gap:24px;flex-wrap:wrap;border-left:3px solid var(--lv,var(--line2))}
+.hero h1{margin:2px 0 4px;font-size:22px;font-weight:600;color:var(--lv,var(--text))}
+.hero p{margin:0;color:var(--dim);max-width:820px}
+.hero .actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+#toast{grid-column:1/-1;display:none;padding:9px 14px;border:1px solid var(--line2);border-radius:8px;background:var(--panel2);font-size:13px}
+.rings{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.ring{display:flex;align-items:center;gap:14px}
+.ring svg{width:108px;height:108px;flex:none;transform:rotate(-90deg)}
+.ring .trk{stroke:var(--line2)}.ring .val{transition:stroke-dasharray .6s ease,stroke .3s}
+.ring .num{font-size:26px;line-height:1.1}.ring .lbl{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-family:var(--mono)}
+.ring .sub{font-size:12.5px;color:var(--dim)}
+.bar{position:relative;height:8px;border-radius:4px;background:var(--line2);margin-top:6px}
+.bar>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--accent);transition:width .6s ease}
+.bar>b{position:absolute;top:11px;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:7px solid var(--text);transform:translateX(-5px)}
+.week{margin-top:18px}.row{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.note{margin-top:14px;font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--line2);display:none}
+.note.warn{display:block;border-color:color-mix(in srgb,var(--warn) 45%,transparent);color:#fcd34d}
+.big{font-size:44px;line-height:1;letter-spacing:-.02em}
+canvas.spark{width:100%;height:70px;display:block;margin-top:12px}
+#tempSpark{height:130px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px;margin:0}
+.kv dt{color:var(--dim)}.kv dd{margin:0;text-align:right}
+.rssi{display:inline-flex;gap:2px;align-items:flex-end;height:12px;margin-left:6px;vertical-align:-1px}
+.rssi i{width:3px;background:var(--line2);border-radius:1px}.rssi i.on{background:var(--accent)}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+@media (max-width:760px){.tiles{grid-template-columns:1fr 1fr}}
+.tile{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.tile .k{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--dim)}
+.tile .v{font-size:22px;margin-top:2px}.tile .s{font-size:12px;color:var(--dim)}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--dim);margin-top:10px}.legend i{display:inline-block;width:10px;height:2px;margin-right:6px;vertical-align:3px}
+.checks{display:flex;flex-direction:column}
+.check{display:grid;grid-template-columns:12px 170px 1fr;gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px}
+.check:last-child{border-bottom:0}.check .n{color:var(--dim)}
+.log{font-family:var(--mono);font-size:12px;line-height:1.65;max-height:260px;overflow:auto;background:#05070a;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.log div{white-space:pre-wrap;word-break:break-word}.log .w{color:#fcd34d}.log .e{color:#fca5a5}
+.backdrop{position:fixed;inset:0;background:#0009;display:none;z-index:9}.backdrop.open{display:block}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(440px,100%);background:var(--panel);border-left:1px solid var(--line2);z-index:10;display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s ease}
+.drawer.open{transform:none}
+.dh{display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line)}.dh h2{margin:0;font-size:16px;font-weight:600}
+.dh button{margin-left:auto}
+.db{flex:1;overflow:auto;padding:8px 20px 20px}
+.grp{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--accent);text-transform:uppercase;margin:20px 0 6px}
+.fld{padding:12px 0;border-bottom:1px solid var(--line)}
+.fld .top{display:flex;align-items:center;gap:10px}.fld label{flex:1}.fld .help{font-size:12px;color:var(--mute);margin-top:4px}
+.fld output{font-family:var(--mono);min-width:76px;text-align:right;color:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent);margin-top:8px}
+.sw{position:relative;width:40px;height:22px;flex:none}.sw input{opacity:0;position:absolute;inset:0;margin:0;cursor:pointer}
+.sw span{position:absolute;inset:0;border-radius:11px;background:var(--line2);transition:.2s;pointer-events:none}
+.sw span::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--dim);transition:.2s}
+.sw input:checked+span{background:color-mix(in srgb,var(--accent) 40%,var(--line2))}.sw input:checked+span::after{left:21px;background:var(--accent)}
+.seg{display:flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden;margin-top:8px}
+.seg label{flex:1;text-align:center;padding:6px 4px;font-size:12.5px;cursor:pointer;border-right:1px solid var(--line2)}
+.seg label:last-child{border-right:0}.seg input{display:none}.seg input:checked+span{color:var(--accent)}
+.seg label:has(input:checked){background:var(--panel2)}
+.df{display:flex;gap:8px;padding:14px 20px;border-top:1px solid var(--line)}.df .primary{margin-left:auto}
+.err{color:#fca5a5;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>DESKMON</b><span class="slash">/</span><span class="sub">màn phụ</span></div>
+  <div class="pill" id="pill"><span class="dot"></span><span id="pillText">Đang kết nối…</span></div>
+  <div class="hdr-right"><span class="mono mute" id="age"></span><span class="mono" id="clock">--:--:--</span>
+    <button id="btnSettings" type="button">Cài đặt</button></div>
+</header>
+
+<main>
+  <section class="card s12 hero" id="hero">
+    <div><div class="ch" style="margin:0"><span class="t">Trạng thái</span></div>
+      <h1 id="title">Đang kiểm tra…</h1><p id="hint"></p></div>
+    <div class="actions">
+      <button type="button" data-act="start">Chạy màn phụ</button>
+      <button type="button" data-act="restart">Khởi động lại</button>
+      <button type="button" data-act="stop" class="danger">Dừng</button>
+    </div>
+  </section>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <section class="card s5">
+    <div class="ch"><span class="t">Claude · mức dùng</span><span class="meta" id="claudeMeta"></span></div>
+    <div id="claudeBody">
+      <div class="rings"><div class="ring" id="ringSession"></div><div class="ring" id="ringModel"></div></div>
+      <div class="week">
+        <div class="row"><span><span id="weekTitle">Tuần này</span> <b class="mono" id="weekPct">--</b></span><span class="dim" id="weekLeft"></span></div>
+        <div class="bar"><i id="weekFill"></i><b id="weekMark"></b></div>
+        <div class="row mute" style="margin-top:16px;font-size:12px"><span id="weekPace"></span><span id="weekReset"></span></div>
+      </div>
+      <div class="note" id="claudeNote"></div>
+    </div>
+    <p class="dim" id="claudeEmpty" hidden></p>
+  </section>
+
+  <section class="card s4">
+    <div class="ch"><span class="t">Màn phụ 2.0"</span><span class="meta"><span class="chip" id="linkChip">--</span></span></div>
+    <div><span class="big mono" id="fps">--</span> <span class="dim">khung/giây</span></div>
+    <div class="dim mono" style="margin-top:6px;font-size:13px" id="streamSub">--</div>
+    <canvas class="spark" id="fpsSpark" aria-label="Khung hình mỗi giây trong 5 phút"></canvas>
+    <div class="row mute" style="font-size:12px;margin-top:6px"><span>5 phút qua</span><span id="reconnects"></span></div>
+  </section>
+
+  <section class="card s3">
+    <div class="ch"><span class="t">Board ESP32</span><span class="meta"><span class="chip" id="fwChip">--</span></span></div>
+    <dl class="kv" id="boardKv"></dl>
+    <div style="margin-top:12px;font-size:13px"><a id="boardLink" href="#" target="_blank" rel="noopener">Mở trang board ↗</a></div>
+  </section>
+
+  <section class="card s7">
+    <div class="ch"><span class="t">Hiệu năng PC</span><span class="meta"><span class="chip" id="lhmChip">LHM</span></span></div>
+    <div class="tiles" id="tiles"></div>
+    <canvas class="spark" id="tempSpark" aria-label="Nhiệt độ CPU và GPU trong 5 phút"></canvas>
+    <div class="legend"><span><i style="background:var(--accent)"></i>CPU °C</span><span><i style="background:var(--violet)"></i>GPU °C</span>
+      <span style="margin-left:auto" class="mono" id="net"></span></div>
+  </section>
+
+  <section class="card s5">
+    <div class="ch"><span class="t">Kiểm tra</span></div>
+    <div class="checks" id="checks"></div>
+  </section>
+
+  <section class="card s12">
+    <div class="ch"><span class="t">Nhật ký</span>
+      <span class="meta" style="display:flex;gap:8px"><button type="button" data-act="open_log">Mở file log</button>
+        <button type="button" data-act="open_display">Cài đặt màn hình</button></span></div>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" aria-label="Cài đặt">
+  <div class="dh"><h2>Cài đặt</h2><button type="button" id="btnClose">Đóng</button></div>
+  <div class="db" id="settingsBody"><p class="dim">Đang tải…</p></div>
+  <div class="df"><button type="button" id="btnDefaults">Mặc định</button><button type="button" class="primary" id="btnSave">Lưu</button></div>
+</aside>
+<div class="backdrop" id="backdrop"></div>
+
+<script>
+const TOKEN = document.querySelector('meta[name="dash-token"]').content;
+const $ = id => document.getElementById(id);
+const THU = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+const SESSION_MS = 5 * 3600e3, WEEK_MS = 7 * 86400e3;
+let state = null, settingsData = null, hotPct = 80;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function lvClass(level) { return "lv-" + (level || "warn"); }
+function pctColor(p) { return p == null ? "var(--line2)" : p >= hotPct ? "var(--bad)" : p >= Math.min(50, hotPct) ? "var(--warn)" : "var(--ok)"; }
+function fmtPct(p) { return p == null ? "--" : Math.round(p) + "%"; }
+function hm(d) { return d.toTimeString().slice(0, 5); }
+function remaining(iso) {
+  if (!iso) return "";
+  let m = Math.max(0, Math.floor((new Date(iso) - Date.now()) / 60000));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60); m = m % 60;
+  return d ? `còn ${d} ngày ${h} giờ` : h ? `còn ${h} giờ ${String(m).padStart(2, "0")} phút` : `còn ${m} phút`;
+}
+function resetLabel(iso) {
+  if (!iso) return "";
+  const t = new Date(iso);
+  return t.toDateString() === new Date().toDateString() ? `hồi lúc ${hm(t)}` : `hồi ${THU[t.getDay()]} ${hm(t)}`;
+}
+function projected(lim) {
+  if (!lim || lim.pct == null || lim.pct < 50 || !lim.resets_at) return null;
+  const end = new Date(lim.resets_at).getTime(), start = end - SESSION_MS, used = Date.now() - start;
+  if (used <= 0) return null;
+  const full = start + used * 100 / lim.pct;
+  return full < end ? new Date(full) : null;
+}
+function fmtDuration(sec) { const m = Math.floor(sec / 60); return m < 60 ? `${m} phút` : `${Math.floor(m / 60)} giờ ${m % 60} phút`; }
+function fmtRate(bps) { if (!bps) return "0 KB/s"; const k = bps / 1024; return k >= 1024 ? (k / 1024).toFixed(1) + " MB/s" : Math.round(k) + " KB/s"; }
+
+// ---------------------------------------------------------------- vòng % (SVG)
+function ring(host, label, lim, empty) {
+  const r = 46, c = 2 * Math.PI * r, p = lim ? lim.pct : null, ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 108 108");
+  for (const [cls, dash] of [["trk", `${c} ${c}`], ["val", `${c * Math.min(p || 0, 100) / 100} ${c}`]]) {
+    const ci = document.createElementNS(ns, "circle");
+    for (const [k, v] of [["cx", 54], ["cy", 54], ["r", r], ["fill", "none"], ["stroke-width", 9], ["class", cls],
+                          ["stroke-dasharray", dash], ["stroke-linecap", "round"]]) ci.setAttribute(k, v);
+    if (cls === "val") ci.setAttribute("stroke", p ? pctColor(p) : "none");
+    svg.appendChild(ci);
+  }
+  const info = el("div"), has = lim && lim.resets_at;
+  info.append(el("div", "lbl", label), el("div", "num mono", fmtPct(p)),
+              el("div", "sub", has ? resetLabel(lim.resets_at) : empty), el("div", "sub", has ? remaining(lim.resets_at) : ""));
+  host.replaceChildren(svg, info);
+}
+
+// ---------------------------------------------------------------- biểu đồ nhỏ (canvas)
+function spark(canvas, series, opts = {}) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const all = series.flatMap(s => s.values.filter(v => v != null));
+  g.strokeStyle = "#1a212c"; g.lineWidth = 1;
+  for (const f of [0.25, 0.5, 0.75]) { g.beginPath(); g.moveTo(0, h * f); g.lineTo(w, h * f); g.stroke(); }
+  if (!all.length) { g.fillStyle = "#5b6573"; g.font = "12px Segoe UI"; g.fillText("chưa có số liệu", 4, h / 2 + 4); return; }
+  const lo = Math.min(opts.min ?? Infinity, ...all), hi = Math.max(opts.max ?? -Infinity, ...all, lo + 1);
+  for (const s of series) {
+    const n = s.values.length, x = i => n < 2 ? w : i * w / (n - 1), y = v => h - 4 - (v - lo) / (hi - lo) * (h - 8);
+    g.strokeStyle = s.color; g.lineWidth = 1.6; g.beginPath(); let pen = false;
+    s.values.forEach((v, i) => { if (v == null) { pen = false; return; } pen ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)); pen = true; });
+    g.stroke();
+  }
+}
+
+// ---------------------------------------------------------------- vẽ trạng thái
+function render(s) {
+  state = s;
+  const lv = lvClass(s.verdict && s.verdict.level), p = s.program || {};
+  $("pill").className = "pill " + lv; $("pillText").textContent = s.verdict ? s.verdict.title : "Đang tải…";
+  $("hero").className = "card s12 hero " + lv;
+  $("title").textContent = s.verdict ? s.verdict.title : "Đang kiểm tra…";
+  $("hint").textContent = s.verdict ? s.verdict.hint : "";
+  $("age").textContent = s.now ? "cập nhật " + new Date(s.now * 1000).toTimeString().slice(0, 8) : "";
+  renderClaude(p.claude);
+  renderStream(s, p);
+  renderBoard(s);
+  renderPc(s, p.pc);
+  renderChecks(s.checks || []);
+  renderLog(s.log || []);
+}
+
+function renderClaude(c) {
+  const body = $("claudeBody"), empty = $("claudeEmpty");
+  const enabled = !settingsData || settingsData.values.claude_enabled;
+  if (!enabled || !c || (!c.session && !c.week)) {
+    body.hidden = true; empty.hidden = false; $("claudeMeta").textContent = "";
+    empty.textContent = !enabled ? "Đang tắt theo dõi Claude (bật lại trong Cài đặt)."
+      : c && c.error ? "Chưa lấy được số liệu: " + c.error : "Chưa có số liệu. Chương trình màn phụ lấy vài phút một lần.";
+    return;
+  }
+  body.hidden = false; empty.hidden = true; hotPct = c.hot_pct || 80;
+  ring($("ringSession"), "Phiên 5 giờ", c.session, "chưa có phiên");
+  ring($("ringModel"), c.model ? c.model.name : "Tuần này", c.model || c.week, "");
+  const wk = c.week || {}, wp = wk.pct;
+  // vòng thứ hai đã là "Tuần này" (khi không có giới hạn theo model): thanh này chỉ nói nhịp dùng
+  $("weekTitle").textContent = c.model ? "Tuần này" : "Nhịp dùng trong tuần";
+  $("weekPct").textContent = c.model ? fmtPct(wp) : ""; $("weekLeft").textContent = c.model ? remaining(wk.resets_at) : "";
+  $("weekFill").style.width = Math.min(wp || 0, 100) + "%"; $("weekFill").style.background = pctColor(wp);
+  if (wk.resets_at) {
+    const gone = Math.min(Math.max(1 - (new Date(wk.resets_at) - Date.now()) / WEEK_MS, 0), 1);
+    $("weekMark").style.left = (gone * 100) + "%"; $("weekMark").hidden = false;
+    $("weekPace").textContent = `▲ đã trôi ${Math.round(gone * 100)}% thời gian` +
+      (wp == null ? "" : wp <= gone * 100 ? " · dùng chậm hơn thời gian" : " · dùng nhanh hơn thời gian");
+    $("weekReset").textContent = resetLabel(wk.resets_at);
+  } else { $("weekMark").hidden = true; $("weekPace").textContent = ""; $("weekReset").textContent = ""; }
+  const full = projected(c.session), note = $("claudeNote");
+  const hot = c.session && c.session.pct != null && c.session.pct >= hotPct;
+  note.className = full || hot ? "note warn" : "note";
+  note.textContent = (hot ? `Phiên đã ${Math.round(c.session.pct)}%, sắp chạm giới hạn. ` : "") +
+    (full ? `Theo tốc độ này sẽ hết lúc ${hm(full)}, trước giờ hồi.` : "");
+  const t = c.fetched_at ? new Date(c.fetched_at) : null;
+  $("claudeMeta").textContent = (c.error ? "lỗi: " + c.error + " · " : "") + (t ? "số liệu lúc " + hm(t) : "");
+}
+
+function renderStream(s, p) {
+  const connected = s.fresh && p.state === "connected", usb = (p.link || "").startsWith("USB");
+  $("fps").textContent = connected && p.fps != null ? p.fps.toFixed(1) : "--";
+  $("linkChip").textContent = connected ? (usb ? "USB " + (s.usb_port || "") : "WiFi") : "chưa nối";
+  $("linkChip").className = "chip" + (connected ? " on" : "");
+  const m = s.monitor;
+  $("streamSub").textContent = (connected ? `${Math.round(p.kbps || 0)} KB/s` : "--") +
+    (m ? ` · màn ảo ${m.width}×${m.height} → 320×240` : " · chưa thấy màn ảo");
+  $("reconnects").textContent = p.reconnects ? `nối lại ${p.reconnects} lần từ lúc chạy` : "";
+  spark($("fpsSpark"), [{ values: (s.history || {}).fps || [], color: "#38bdf8" }], { min: 0, max: 30 });
+}
+
+function renderBoard(s) {
+  const b = s.board, kv = $("boardKv"), rows = [];
+  const add = (k, v) => { const dd = el("dd", "mono"); dd.append(v instanceof Node ? v : document.createTextNode(v)); rows.push(el("dt", null, k), dd); };
+  if (!b) {
+    $("fwChip").textContent = "không trả lời"; $("fwChip").className = "chip";
+    add("WiFi", "không thấy board");
+  } else {
+    const deskmon = "fw" in b;
+    $("fwChip").textContent = deskmon ? "DESKMON" : "MÀN PHỤ"; $("fwChip").className = "chip" + (deskmon ? "" : " on");
+    add("Firmware", deskmon ? "DeskMon " + b.fw : b.firmware);
+    add("Bật được", fmtDuration(b.uptime || 0));
+    const rs = el("span"), bars = el("span", "rssi");
+    const q = b.rssi == null ? 0 : b.rssi >= -55 ? 4 : b.rssi >= -65 ? 3 : b.rssi >= -75 ? 2 : 1;
+    for (let i = 0; i < 4; i++) { const bi = el("i", i < q ? "on" : ""); bi.style.height = (4 + i * 2.6) + "px"; bars.append(bi); }
+    rs.append(document.createTextNode((b.rssi ?? "--") + " dBm"), bars); add("WiFi", rs);
+    if (!deskmon) { add("DeskMon dự phòng", b.deskmonSlot ? "có" : "thiếu"); add("Lỗi CRC / giải mã", `${b.crcErrors ?? 0} / ${b.decodeErrors ?? 0}`); }
+  }
+  add("Cáp USB", s.usb_port || "không cắm");
+  kv.replaceChildren(...rows);
+  $("boardLink").href = "http://" + (s.board_addr || "deskmon.local");
+}
+
+function renderPc(s, pc) {
+  $("lhmChip").className = "chip" + (s.lhm_ok ? " on" : ""); $("lhmChip").textContent = s.lhm_ok ? "LHM đang chạy" : "LHM tắt";
+  const gb = v => v == null ? "--" : v.toFixed(1);
+  const items = pc ? [
+    ["CPU", pc.cpu_load, pc.cpu_temp != null ? Math.round(pc.cpu_temp) + " °C" : "-- °C"],
+    ["GPU", pc.gpu_load, pc.gpu_temp != null ? Math.round(pc.gpu_temp) + " °C" : "-- °C"],
+    ["RAM", pc.ram_total ? pc.ram_used / pc.ram_total * 100 : null, `${gb(pc.ram_used)} / ${gb(pc.ram_total)} GB`],
+    ["VRAM", pc.vram_pct, pc.vram_total ? `${gb(pc.vram_used)} / ${gb(pc.vram_total)} GB` : "--"],
+  ] : ["CPU", "GPU", "RAM", "VRAM"].map(k => [k, null, "--"]);
+  $("tiles").replaceChildren(...items.map(([k, pct, sub]) => {
+    const t = el("div", "tile"), bar = el("div", "bar"), fill = el("i");
+    fill.style.width = Math.min(pct || 0, 100) + "%";
+    fill.style.background = pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--accent)";
+    bar.append(fill); t.append(el("div", "k", k), el("div", "v mono", fmtPct(pct)), el("div", "s mono", sub), bar);
+    return t;
+  }));
+  const h = s.history || {};
+  spark($("tempSpark"), [{ values: h.cpu_temp || [], color: "#38bdf8" }, { values: h.gpu_temp || [], color: "#a78bfa" }], { min: 30, max: 90 });
+  $("net").textContent = pc ? `↓ ${fmtRate(pc.net_down)}   ↑ ${fmtRate(pc.net_up)}` : "";
+}
+
+function renderChecks(checks) {
+  $("checks").replaceChildren(...checks.map(c => {
+    const row = el("div", "check"); row.append(el("span", "dot " + lvClass(c.level)), el("span", "n", c.name), el("span", null, c.text));
+    return row;
+  }));
+}
+
+function renderLog(lines) {
+  const box = $("log"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  box.replaceChildren(...lines.map(line => el("div", / (ERROR|CRITICAL) /.test(line) ? "e" : / WARNING /.test(line) ? "w" : "", line)));
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+// ---------------------------------------------------------------- gọi máy chủ
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Dash-Token": TOKEN }, body: JSON.stringify(body) });
+  return { status: r.status, data: await r.json().catch(() => ({})) };
+}
+function toast(text, bad) {
+  const t = $("toast"); t.textContent = text; t.style.display = "block"; t.style.color = bad ? "#fca5a5" : "";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.style.display = "none"; }, 6000);
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const s = await r.json();
+    if (!s.loading) render(s);
+  } catch (e) {
+    $("pill").className = "pill lv-bad"; $("pillText").textContent = "Mất kết nối với bảng điều khiển";
+  }
+  setTimeout(poll, 2000);
+}
+
+document.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", async () => {
+  const action = b.dataset.act; b.disabled = true;
+  try {
+    let r = await post("/api/action", { action });
+    if (r.status === 409 && confirm("Chương trình đang nạp firmware cho board.\nLàm vậy lúc này sẽ làm hỏng lần nạp, chương trình phải nạp lại từ đầu.\n\nVẫn tiếp tục?"))
+      r = await post("/api/action", { action, force: true });
+    if (r.status !== 409) toast(r.data.message || r.data.error || "Xong", r.status >= 400);
+  } catch (e) { toast("Không gửi được lệnh: " + e, true); }
+  b.disabled = false;
+}));
+
+// ---------------------------------------------------------------- cài đặt
+function field(f, value) {
+  const wrap = el("div", "fld"), top = el("div", "top"), id = "f_" + f.key, label = el("label", null, f.label);
+  label.htmlFor = id; top.append(label);
+  if (f.kind === "int") {
+    const out = el("output", null, `${value} ${f.unit}`), input = el("input");
+    Object.assign(input, { type: "range", id, min: f.min, max: f.max, step: f.step, value });
+    input.addEventListener("input", () => { out.textContent = `${input.value} ${f.unit}`; });
+    top.append(out); wrap.append(top, input);
+  } else if (f.kind === "bool") {
+    const sw = el("span", "sw"), input = el("input");
+    Object.assign(input, { type: "checkbox", id, checked: !!value }); sw.append(input, el("span")); top.append(sw); wrap.append(top);
+  } else {
+    const seg = el("div", "seg");
+    for (const [v, name] of f.choices) {
+      const l = el("label"), r = el("input"); Object.assign(r, { type: "radio", name: id, value: v, checked: v === value });
+      l.append(r, el("span", null, name)); seg.append(l);
+    }
+    wrap.append(top, seg);
+  }
+  if (f.help) wrap.append(el("div", "help", f.help));
+  return wrap;
+}
+
+function readField(f) {
+  const id = "f_" + f.key;
+  if (f.kind === "int") return Number($(id).value);
+  if (f.kind === "bool") return $(id).checked;
+  const c = document.querySelector(`input[name="${id}"]:checked`); return c ? c.value : f.default;
+}
+
+function buildSettings(data, values) {
+  settingsData = data; let group = null; const nodes = [];
+  for (const f of data.schema) {
+    if (f.group !== group) { group = f.group; nodes.push(el("div", "grp", group)); }
+    nodes.push(field(f, values[f.key]));
+  }
+  nodes.push(el("div", "grp", "Windows"));
+  nodes.push(field({ key: "startup_program", label: "Tự chạy màn phụ khi đăng nhập Windows", kind: "bool" }, data.startup.program));
+  nodes.push(field({ key: "startup_dashboard", label: "Tự mở bảng điều khiển khi đăng nhập Windows", kind: "bool" }, data.startup.dashboard));
+  nodes.push(el("div", "err"));
+  $("settingsBody").replaceChildren(...nodes);
+}
+
+async function openSettings() {
+  $("drawer").classList.add("open"); $("backdrop").classList.add("open");
+  try { const data = await (await fetch("/api/settings", { cache: "no-store" })).json(); buildSettings(data, data.values); }
+  catch (e) { $("settingsBody").textContent = "Không tải được cài đặt: " + e; }
+}
+function closeSettings() { $("drawer").classList.remove("open"); $("backdrop").classList.remove("open"); }
+
+$("btnSettings").addEventListener("click", openSettings);
+$("btnClose").addEventListener("click", closeSettings);
+$("backdrop").addEventListener("click", closeSettings);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSettings(); });
+$("btnDefaults").addEventListener("click", () => { if (settingsData) buildSettings(settingsData, settingsData.defaults); });
+$("btnSave").addEventListener("click", async () => {
+  if (!settingsData) return;
+  const values = Object.fromEntries(settingsData.schema.map(f => [f.key, readField(f)]));
+  const startup = { program: $("f_startup_program").checked, dashboard: $("f_startup_dashboard").checked };
+  const r = await post("/api/settings", { values, startup });
+  if (r.status !== 200) { document.querySelector("#settingsBody .err").textContent = r.data.error || "Lưu lỗi"; return; }
+  buildSettings(r.data, r.data.values); closeSettings();
+  toast("Đã lưu cài đặt. Chương trình màn phụ áp dụng sau vài giây, không cần khởi động lại.");
+});
+
+setInterval(() => { $("clock").textContent = new Date().toTimeString().slice(0, 8); }, 1000);
+fetch("/api/settings", { cache: "no-store" }).then(r => r.json()).then(d => { settingsData = d; }).catch(() => {});
+poll();
+window.addEventListener("resize", () => { if (state) render(state); });
+</script>
+</body>
+</html>

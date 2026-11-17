@@ -107,14 +107,31 @@ Tuỳ chọn khác: `--monitor N` (chọn màn theo số trong `--list`), `--por
 
 ## Bảng điều khiển (`bang_dieu_khien.py`)
 
-Cửa sổ nhỏ mở cùng Windows (shortcut `Bang dieu khien man phu.lnk` trong `shell:startup` và trên Desktop). Nhìn một cái là biết màn phụ đang ổn hay hỏng ở đâu:
+Giao diện web chạy ngay trong máy (`http://127.0.0.1:8765`), mở thành cửa sổ riêng bằng Edge, không có thanh địa chỉ. Cửa sổ dùng hồ sơ Edge riêng ở `%LOCALAPPDATA%\DeskMonDashboard`, nên tiện ích của Edge chính không chen vào. Bảng mở cùng Windows bằng shortcut `Bang dieu khien man phu.lnk` trong `shell:startup`; mở bằng tay thì bấm shortcut cùng tên trên Desktop hoặc `pc\bang_dieu_khien.bat`. Khi bảng đang chạy, mở thêm chỉ ra thêm cửa sổ, không chạy thêm máy chủ.
 
-- **Dòng kết luận** (xanh / vàng / đỏ) kèm việc nên làm. Ví dụ: "Màn phụ đang chạy tốt", "Đang nạp lại firmware màn phụ (đừng rút điện board)", "Nạp firmware lỗi, tự thử lại sau 30 giây", "Windows chưa nhận màn hình ảo", "Chương trình màn phụ không chạy".
-- **Từng phần:** chương trình màn phụ, màn hình ảo của Windows, đường truyền (khung/giây, KB/s), cáp USB, firmware trên board, DeskMon dự phòng, sóng WiFi của board, LibreHardwareMonitor, lỗi gần nhất.
-- **Nút bấm:** Chạy màn phụ, Khởi động lại, Dừng, Mở log, Trang board, Cài đặt màn hình.
-- **Nhật ký:** những dòng log cuối, lỗi tô đỏ, cảnh báo tô vàng.
+**Theo dõi** (tự làm mới 2 giây một lần):
+- **Trạng thái:** dòng kết luận xanh / vàng / đỏ kèm việc nên làm, ba nút Chạy màn phụ, Khởi động lại, Dừng. Bấm Khởi động lại hay Dừng lúc đang nạp firmware thì bảng hỏi lại.
+- **Claude:** vòng % phiên 5 giờ và tuần (hoặc giới hạn theo model nếu có), giờ hồi, thời gian còn lại, nhịp dùng trong tuần, cảnh báo "theo tốc độ này sẽ hết lúc …".
+- **Màn phụ 2.0":** khung/giây cỡ lớn, KB/s, USB hay WiFi, biểu đồ khung/giây 5 phút qua.
+- **Board ESP32:** firmware, thời gian đã bật, sóng WiFi, DeskMon dự phòng, lỗi CRC và giải mã, cáp USB, link mở trang board.
+- **Hiệu năng PC:** CPU, GPU, RAM, VRAM (%, nhiệt độ, GB), biểu đồ nhiệt độ CPU và GPU 5 phút, tốc độ mạng.
+- **Kiểm tra:** từng phần ổn hay hỏng. **Nhật ký:** 40 dòng log cuối, lỗi tô đỏ, cảnh báo tô vàng.
 
-Chương trình màn phụ ghi trạng thái của nó vào `pc/man_phu_status.json` vài giây một lần. Bảng điều khiển đọc file đó, nên biết được cả lúc chương trình đang nạp firmware hay đang kẹt. Mở bằng tay: bấm đúp `pc\bang_dieu_khien.bat` hoặc shortcut trên Desktop. Mỗi lúc chỉ mở được một cửa sổ.
+**Cài đặt** (nút "Cài đặt" góc trên; lưu xong vài giây sau có hiệu lực, không cần khởi động lại):
+
+| Nhóm | Chỉnh được |
+|---|---|
+| Màn 1.54" | Thời gian trang hiệu năng PC, trang Claude, trang màn phụ (0 = ẩn trang) |
+| Claude | Bật/tắt theo dõi (tắt thì không đọc token), hỏi mức dùng mỗi bao nhiêu phút, ngưỡng "sắp hết", thời gian hiện "Đã hồi token" |
+| Màn phụ 2.0" | Khung hình tối đa; đường truyền: tự chọn (USB trước), chỉ cáp USB, hoặc chỉ WiFi (đổi là kết nối lại ngay) |
+| Windows | Tự chạy màn phụ, tự mở bảng điều khiển khi đăng nhập |
+
+Cài đặt lưu ở `pc/man_phu_settings.json`. Muốn về như cũ: bấm "Mặc định" rồi "Lưu".
+
+**Bên trong:**
+- Chương trình màn phụ ghi trạng thái, số liệu PC và Claude (không có token) vào `pc/man_phu_status.json` vài giây một lần. Nhờ vậy bảng biết cả lúc chương trình đang nạp firmware hay đang kẹt.
+- Máy chủ chỉ nghe ở 127.0.0.1 và chỉ nhận Host là 127.0.0.1 hoặc localhost. Mọi nút bấm và lần lưu cài đặt đều phải kèm mã bí mật sinh mới mỗi lần chạy, nên trang web lạ không điều khiển được.
+- Mỗi lần bấm nút hay lưu cài đặt đều được ghi vào `man_phu.log`.
 
 ## 4. PC bật: màn phụ. PC tắt: DeskMon
 
