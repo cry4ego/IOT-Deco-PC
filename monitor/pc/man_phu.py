@@ -175,7 +175,7 @@ class App:
         self.rate_bytes = 0
         self.side: SideView | None = None
         if not args.no_side:
-            self.side = SideView(args.lhm_url)
+            self.side = SideView(args.lhm_url, claude=not getattr(args, "no_claude", False))
             self.side.start()
 
     def ensure_source(self) -> bool:
@@ -368,6 +368,8 @@ def main():
     p.add_argument("--fps", type=float, default=30, help="Số khung hình tối đa mỗi giây")
     p.add_argument("--no-side", action="store_true", help="Không vẽ màn 1.54\" (ESP32 tự hiện trạng thái)")
     p.add_argument("--lhm-url", default=DEFAULT_LHM_URL, help="Web server của LibreHardwareMonitor")
+    p.add_argument("--no-claude", action="store_true",
+                   help="Không có trang mức dùng Claude trên màn 1.54\" (không đọc token Claude Code)")
     p.add_argument("--firmware", default=str(FIRMWARE),
                    help="firmware.bin màn phụ, nạp lại khi ESP32 đang chạy DeskMon")
     p.add_argument("--deskmon-firmware", default=str(DESKMON_FIRMWARE),

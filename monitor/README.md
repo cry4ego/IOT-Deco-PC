@@ -12,9 +12,26 @@ Windows ──(driver màn hình ảo 640×480)──► man_phu.py chụp màn 
         ──► USB 2 Mbaud hoặc WiFi ──► ESP32 kiểm CRC, giải mã, vẽ lên màn 2.0"
 ```
 
-Màn 1.54" khi PC bật: 2 trang luân phiên do PC vẽ
+Màn 1.54" khi PC bật: các trang luân phiên do PC vẽ
 - **Hiệu năng PC** (10 giây): CPU, GPU, RAM, VRAM, nhiệt độ, tốc độ mạng. Dùng lại bộ đọc LibreHardwareMonitor và mẫu vẽ của DeskMon (`pc/deskmon.py`, chỉ import).
+- **Claude** (8 giây): mức dùng Claude, giờ hồi token, giới hạn tuần (`pc/claude_usage.py`). Chi tiết ở mục bên dưới.
 - **Màn hình phụ** (5 giây): số khung hình mỗi giây, KB/s, đường truyền, độ phân giải màn ảo.
+
+### Trang Claude
+
+- **Nội dung:**
+  - vòng % của phiên 5 giờ: xanh dưới 50%, vàng dưới 80%, đỏ từ 80%;
+  - giờ hồi và thời gian còn lại;
+  - thanh "Tuần này", dấu ▲ chỉ phần tuần đã trôi qua (thanh màu nằm trái ▲ nghĩa là đang dùng chậm hơn thời gian);
+  - giới hạn riêng theo model (ví dụ Fable), nếu tài khoản có.
+- **Phiên ≥ 80%:** trang Claude hiện lâu gấp đôi và có nhãn đỏ "sắp hết". Nếu cứ dùng đều như từ đầu phiên mà sẽ hết trước giờ hồi, trang hiện thêm dòng "Theo tốc độ này: hết lúc …" (chỉ hiện khi phiên từ 50% trở lên).
+- **Tới giờ hồi:** màn hiện "Đã hồi token" 30 giây, rồi chương trình hỏi lại số liệu mỗi phút trong 10 phút sau đó.
+- **Cách lấy số liệu:** giống bản Kindle dashboard trong `D:\Đồ Decô`.
+  - Đọc token đăng nhập Claude Code ở `%USERPROFILE%\.claude\.credentials.json`, rồi 5 phút một lần hỏi `api.anthropic.com/api/oauth/usage`.
+  - Token chỉ gửi tới Anthropic: không ghi log, không gửi sang ESP32.
+  - Đây là địa chỉ nội bộ, chưa được công bố, có thể ngừng hoạt động bất cứ lúc nào. Khi lỗi, trang Claude tự ẩn (log ghi "Không lấy được mức dùng Claude").
+  - Token hết hạn thì mở Claude Code là tự làm mới. Số liệu cũ quá 15 phút thì góc trên hiện "lúc HH:MM" màu vàng.
+- **Không muốn có trang này:** chạy `man_phu.py --no-claude`.
 
 PC không nối thì ESP32 tự hiện trạng thái kết nối, IP. Muốn để ESP32 tự hiện như vậy cả khi PC bật: chạy `man_phu.py --no-side`.
 
